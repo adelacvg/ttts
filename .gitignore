@@ -2,3 +2,5 @@ ttts/datasets/*
 */**/*.pt
 */**/*.pyc
 */**/logs/*
+*/**/*.txt
+*/**/*.jsonl
