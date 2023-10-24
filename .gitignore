@@ -1,0 +1,4 @@
+ttts/datasets/*
+*/**/*.pt
+*/**/*.pyc
+*/**/logs/*

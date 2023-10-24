@@ -1,0 +1,40 @@
+{
+  "train": {
+    "train_steps":50000,
+    "val_freq" : 100,
+    "save_freq" : 1000,
+    "keep_ckpts" : 3,
+    "lr":1e-4,
+    "logs_folder":"vqvae/logs"
+  },
+  "dataset": {
+    "path":"datasets/cliped_datasets",
+    "cache_path":"datasets/vq_data.cache",
+    "pad_to_samples":200,
+    "should_squeeze":false
+  },
+  "vqvae":{
+    "channels":100,
+    "num_tokens":8192,
+    "hidden_dim":512,
+    "num_resnet_blocks":3,
+    "codebook_dim":2048,
+    "num_layers":2,
+    "positional_dims":1,
+    "kernel_size":3,
+    "use_transposed_convs":false,
+    "use_lr_quantizer":true
+  },
+  "dataloader":
+  {
+    "batch_size" : 1024,
+    "shuffle": false,
+    "num_workers" : 0,
+    "drop_last":true, 
+    "pin_memory":true
+  },
+  "comment":{
+    "sampler":"sampler", 
+    "collate_fn":"collate_fn"
+  }
+}

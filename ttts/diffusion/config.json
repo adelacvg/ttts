@@ -1,0 +1,59 @@
+{
+  "train": {
+    "train_steps":80000,
+    "val_freq" : 100,
+    "save_freq" : 1000,
+    "keep_ckpts" : 3,
+    "lr":8e-5,
+    "logs_folder":"diffusion/logs",
+    "accumulate_num":5,
+    "unconditioned_percentage":0.15,
+    "timesteps":1000
+  },
+  "dataset": {
+    "path":"datasets/all_data.jsonl"
+  },
+  "prompt_encoder":{
+    "in_channels":100,
+    "hidden_channels":256,
+    "out_channels":256,
+    "n_layers":6,
+    "p_dropout":0.2
+  },
+  "diffusion":{
+    "in_channels":100,
+    "out_channels":100,
+    "hidden_channels":256,
+    "block_out_channels":[128,256,384,512],
+    "n_heads":8,
+    "p_dropout":0.2
+  },
+  "dataloader":
+  {
+    "batch_size" : 16,
+    "shuffle": false,
+    "num_workers" : 64,
+    "drop_last":true, 
+    "pin_memory":true
+  },
+  "phoneme_encoder":{
+    "in_channels":256,
+    "hidden_channels":256,
+    "out_channels":256,
+    "n_layers":6,
+    "p_dropout":0.2
+  },
+  "f0_predictor":
+  {
+    "in_channels":256,
+    "hidden_channels":256,
+    "out_channels":1,
+    "attention_layers":10,
+    "n_heads":8,
+    "p_dropout":0.5
+  },
+  "comment":{
+    "sampler":"sampler", 
+    "collate_fn":"collate_fn"
+  }
+}

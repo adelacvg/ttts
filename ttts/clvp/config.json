@@ -1,0 +1,35 @@
+{
+  "train": {
+    "train_steps":80000,
+    "val_freq" : 100,
+    "save_freq" : 1000,
+    "keep_ckpts" : 3,
+    "lr":3e-4,
+    "logs_folder":"clvp/logs",
+    "accumulate_num":5
+  },
+  "dataset": {
+    "path":"datasets/all_data.jsonl"
+  },
+  "clvp":{
+    "text_enc_depth":20,
+    "speech_enc_depth":20,
+    "text_heads":16,
+    "speech_heads":16,
+    "dim_latent":768,
+    "dim_text":768,
+    "dim_speech":768
+  },
+  "dataloader":
+  {
+    "batch_size" : 24,
+    "shuffle": false,
+    "num_workers" : 64,
+    "drop_last":true, 
+    "pin_memory":true
+  },
+  "comment":{
+    "sampler":"sampler", 
+    "collate_fn":"collate_fn"
+  }
+}
