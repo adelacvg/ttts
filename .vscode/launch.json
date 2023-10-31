@@ -5,12 +5,22 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "train",
+            "type": "python",
+            "request": "launch",
+            "module": "accelerate.commands.launch",
+            "args": ["ttts/vqvae/train.py"], // other args comes after train.py
+            "console": "integratedTerminal",
+            // "env": {"CUDA_LAUNCH_BLOCKING": "1"}
+        }, 
+        {
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": false,
+            "env": {"CUDA_VISIBLE_DEVICES":"2"}
         }
     ]
 }

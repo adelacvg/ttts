@@ -29,7 +29,6 @@ def write_jsonl(path, all_paths):
 
 class DiffusionDataset(torch.utils.data.Dataset):
     def __init__(self, opt):
-        self.tok = VoiceBpeTokenizer('gpt/gpt_tts_tokenizer.json')
         self.jsonl_path = opt['dataset']['path']
         self.audiopaths_and_text = read_jsonl(self.jsonl_path)
 
@@ -53,6 +52,11 @@ class DiffusionDataset(torch.utils.data.Dataset):
             mel_recon = mel_recon_raw[:,split:]
             mel = mel_raw[:,split:]
             mel_refer = mel_raw[:,:split]
+        if mel.shape[1]>200:
+            mel_recon = mel_recon[:,:200]
+            mel = mel[:,:200]
+        if mel_refer.shape[1]>100:
+            mel_refer = mel_refer[:,:100]
         return mel_recon, mel, mel_refer
 
     def __len__(self):

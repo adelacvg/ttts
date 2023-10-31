@@ -1,4 +1,5 @@
 import os
+import random
 
 import torch
 import torch.nn.functional as F
@@ -28,7 +29,7 @@ def write_jsonl(path, all_paths):
 
 class GptTtsDataset(torch.utils.data.Dataset):
     def __init__(self, opt):
-        self.tok = VoiceBpeTokenizer('gpt/gpt_tts_tokenizer.json')
+        self.tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
         self.jsonl_path = opt['dataset']['path']
         self.audiopaths_and_text = read_jsonl(self.jsonl_path)
 
@@ -46,10 +47,16 @@ class GptTtsDataset(torch.utils.data.Dataset):
 
         mel_path = audiopath + '.mel.pth'
         mel = torch.load(mel_path)[0]
+        wav_length = mel.shape[1]*256
+        split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
+        if random.random()>0.5:
+            mel = mel[:,:split]
+        else:
+            mel = mel[:,split:]
 
         #load wav
-        wav,sr = torchaudio.load(audiopath)
-        wav_length = wav.shape[1]
+        # wav,sr = torchaudio.load(audiopath)
+        # wav = torchaudio.transforms.Resample(sr,24000)(wav)
         if text.shape[0]>400 or qmel.shape[0]>600:
             return None
 

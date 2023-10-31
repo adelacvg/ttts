@@ -1,4 +1,5 @@
 import functools
+import multiprocessing
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 import json
@@ -12,10 +13,6 @@ from pydub.silence import split_on_silence
 from pydub import  AudioSegment
 from ttts.utils.utils import get_paths_with_cache
 from pydub.exceptions import CouldntDecodeError
-asr_pipeline = pipeline(
-    task=Tasks.auto_speech_recognition,
-    model='damo/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',
-)
 def phase1_vad_and_sample(audio_path,out_path):
     min_duration=2
     max_duration=20
@@ -37,22 +34,27 @@ def phase1_vad_and_sample(audio_path,out_path):
         clip_path = os.path.join(out_path, out_prefix,str(i)+'.wav')
         segments[i].export(clip_path, format='wav')
 
-all_paths = []
-def phase2_filter_and_transcript_and_to_jsonl(clip_path):
-    global asr_pipeline
-    try:
-        rec_result = asr_pipeline(audio_in = clip_path)
-    except Exception as e:
-        print(e)
-        return
-    text = rec_result['text']
-    all_paths.append({'text':text,'path':clip_path})
+def phase2_filter_and_transcript_and_to_jsonl(clip_paths):
+    all_paths = []
+    asr_pipeline = pipeline(
+        task=Tasks.auto_speech_recognition,
+        model='damo/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',
+    )
+    for clip_path in tqdm(clip_paths):
+        try:
+            rec_result = asr_pipeline(audio_in = clip_path)
+        except Exception as e:
+            print(e)
+            return
+        text = rec_result['text']
+        all_paths.append({'text':text,'path':clip_path})
+    return all_paths
 
 if __name__ == '__main__':
     # phase 1
     print("---------------phase1-----------------")
-    files = get_paths_with_cache('datasets/raw_datasets', 'datasets/wav_paths.cache')
-    cliped_path = 'datasets/cliped_datasets'
+    files = get_paths_with_cache('ttts/datasets/raw_datasets', 'ttts/datasets/wav_paths.cache')
+    cliped_path = 'ttts/datasets/cliped_datasets'
     Path(cliped_path).mkdir(exist_ok = True, parents=True)
     num_threads = 8
     with ThreadPool(num_threads) as pool:
@@ -60,13 +62,19 @@ if __name__ == '__main__':
 
     # phase 2 
     print("---------------phase2-----------------")
-    files = get_paths_with_cache('datasets/cliped_datasets', 'datasets/clip_paths.cache')
-    processed_path = 'datasets/processed_datasets'
-    all_data_path = 'datasets/all_data.jsonl'
+    files = get_paths_with_cache('ttts/datasets/cliped_datasets', 'ttts/datasets/clip_paths.cache')
+    processed_path = 'ttts/datasets/processed_datasets'
+    all_data_path = 'ttts/datasets/all_data.jsonl'
     Path(processed_path).mkdir(exist_ok = True, parents=True)
-    num_threads = 1 #now only set to 1 work, need to do multi process
-    with ThreadPool(num_threads) as pool:
-        list(tqdm(pool.imap(functools.partial(phase2_filter_and_transcript_and_to_jsonl), files), total=len(files)))
+    num_threads = 6 
+    funcs = []
+    for i in range(num_threads):
+        funcs.append(functools.partial(phase2_filter_and_transcript_and_to_jsonl, files[i::num_threads]))
+    with multiprocessing.Pool() as pool:
+        results = [pool.apply_async(func) for func in funcs]
+        pool.close()
+        pool.join()
+    all_paths = sum([result.get() for result in results], [])
     with open(all_data_path, 'w', encoding='utf-8') as file:
         for item in all_paths:
             json.dump(item, file, ensure_ascii=False)

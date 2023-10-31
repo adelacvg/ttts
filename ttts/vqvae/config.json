@@ -5,11 +5,11 @@
     "save_freq" : 1000,
     "keep_ckpts" : 3,
     "lr":1e-4,
-    "logs_folder":"vqvae/logs"
+    "logs_folder":"ttts/vqvae/logs"
   },
   "dataset": {
-    "path":"datasets/cliped_datasets",
-    "cache_path":"datasets/vq_data.cache",
+    "path":"ttts/datasets/cliped_datasets",
+    "cache_path":"ttts/datasets/vq_data.cache",
     "pad_to_samples":200,
     "should_squeeze":false
   },

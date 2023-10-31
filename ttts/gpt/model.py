@@ -451,7 +451,7 @@ class UnifiedVoice(nn.Module):
         return conds
 
     def forward(self, speech_conditioning_latent, text_inputs, text_lengths, mel_codes, wav_lengths, types=None, text_first=True, raw_mels=None, return_attentions=False,
-                return_latent=False, clip_inputs=True):
+                return_latent=False, clip_inputs=False):
         """
         Forward pass that uses both text and voice in either text conditioning mode or voice conditioning mode
         (actuated by `text_first`).
@@ -519,6 +519,7 @@ class UnifiedVoice(nn.Module):
         text_inputs, _ = self.build_aligned_inputs_and_targets(text_inputs, self.start_text_token, self.stop_text_token)
         text_emb = self.text_embedding(text_inputs) + self.text_pos_embedding(text_inputs)
 
+        speech_conditioning_latent = self.get_conditioning(speech_conditioning_latent)
         conds = speech_conditioning_latent.unsqueeze(1)
         emb = torch.cat([conds, text_emb], dim=1)
         self.inference_model.store_mel_emb(emb)

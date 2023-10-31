@@ -1,4 +1,5 @@
 import torchaudio
+from ttts.diffusion.diffusion_util import denormalize_tacotron_mel, normalize_tacotron_mel
 from ttts.utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
 import torch
 import copy
@@ -16,17 +17,6 @@ from torch.utils.data import DataLoader
 from torch import nn
 from torch.optim import AdamW
 from accelerate import Accelerator
-TACOTRON_MEL_MAX = 4.6143386840820312
-TACOTRON_MEL_MIN = -16.512925148010254
-
-
-def denormalize_tacotron_mel(norm_mel):
-    return ((norm_mel+1)/2)*(TACOTRON_MEL_MAX-TACOTRON_MEL_MIN)+TACOTRON_MEL_MIN
-
-
-def normalize_tacotron_mel(mel):
-    return 2 * ((mel - TACOTRON_MEL_MIN) / (TACOTRON_MEL_MAX - TACOTRON_MEL_MIN)) - 1
-
 import functools
 import random
 
@@ -36,8 +26,23 @@ from torch.cuda.amp import autocast
 from ttts.utils.diffusion import get_named_beta_schedule
 from ttts.utils.resample import create_named_schedule_sampler, LossAwareSampler, DeterministicSampler, LossSecondMomentResampler
 from ttts.utils.diffusion import space_timesteps, SpacedDiffusion
-from ttts.diffusion.diffusion_util import Diffuser
+# from ttts.diffusion.diffusion_util import Diffuser
+# from accelerate import DistributedDataParallelKwargs
 
+def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_latents, temperature=1, verbose=True):
+    """
+    Uses the specified diffusion model to convert discrete codes into a spectrogram.
+    """
+    with torch.no_grad():
+        output_seq_len = latents.shape[1] * 4 # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
+        output_shape = (latents.shape[0], 100, output_seq_len)
+        precomputed_embeddings = diffusion_model.timestep_independent(latents, conditioning_latents, output_seq_len, False)
+
+        noise = torch.randn(output_shape, device=latents.device) * temperature
+        mel = diffuser.p_sample_loop(diffusion_model, output_shape, noise=noise,
+                                      model_kwargs={'precomputed_aligned_embeddings': precomputed_embeddings},
+                                     progress=verbose)
+        return denormalize_tacotron_mel(mel)[:,:,:output_seq_len]
 
 def set_requires_grad(model, val):
     for p in model.parameters():
@@ -49,7 +54,8 @@ def get_grad_norm(model):
             param_norm = p.grad.data.norm(2)
             total_norm += param_norm.item() ** 2
         except:
-            print(name)
+            pass
+            # print(name)
     total_norm = total_norm ** (1. / 2) 
     return total_norm
 def cycle(dl):
@@ -62,10 +68,23 @@ def warmup(step):
     else:
         return 1
 class Trainer(object):
-    def __init__(self, cfg_path='diffusion/config.json'):
+    def __init__(self, cfg_path='ttts/diffusion/config.json'):
+        # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        # self.accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
         self.accelerator = Accelerator()
         self.cfg = json.load(open(cfg_path))
-        self.diffusion = Diffuser(self.cfg)
+        trained_diffusion_steps = 4000
+        self.trained_diffusion_steps = 4000
+        desired_diffusion_steps = 200
+        self.desired_diffusion_steps = 200
+        cond_free_k = 2.
+        self.diffuser= SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]), model_mean_type='epsilon',
+                           model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
+                           conditioning_free=False, conditioning_free_k=cond_free_k)
+        self.infer_diffuser = SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]), model_mean_type='epsilon',
+                           model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
+                           conditioning_free=True, conditioning_free_k=cond_free_k)
+        self.diffusion = DiffusionTts(**self.cfg['diffusion'])
         self.dataset = DiffusionDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'], collate_fn=DiffusionCollater())
         self.train_steps = self.cfg['train']['train_steps']
@@ -121,20 +140,21 @@ class Trainer(object):
                     data = next(self.dataloader)
                     if data==None:
                         continue
-                # mel_recon_padded, mel_padded, mel_lengths, refer_padded, refer_lengths
-                    input_params = [
-                        data['padded_mel_recon'],
-                        data['padded_mel'],
-                        data['mel_lengths'],
-                        data['padded_mel_refer'],
-                        data['mel_refer_lengths']
-                    ]
-                    input_params = [d.to(device) for d in input_params]
+                    # mel_recon_padded, mel_padded, mel_lengths, refer_padded, refer_lengths
+                    x_start = normalize_tacotron_mel(data['padded_mel'].to(device))
+                    aligned_conditioning = normalize_tacotron_mel(data['padded_mel_recon'].to(device))
+                    conditioning_latent = normalize_tacotron_mel(data['padded_mel_refer'].to(device))
+                    t = torch.randint(0, self.desired_diffusion_steps, (x_start.shape[0],), device=device).long().to(device)
                     with self.accelerator.autocast():
-                        if random.random()<self.unconditioned_percentage:
-                            loss = self.diffusion(input_params,conditioning_free=True)
-                        else:
-                            loss = self.diffusion(input_params)
+                        loss = self.diffuser.training_losses( 
+                            model = self.diffusion, 
+                            x_start = x_start,
+                            t = t,
+                            model_kwargs = {
+                                "aligned_conditioning": aligned_conditioning,
+                                "conditioning_latent": conditioning_latent
+                            },
+                            )["loss"].mean()
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -165,11 +185,14 @@ class Trainer(object):
                     mel_recon_padded, refer_padded = mel_recon_padded.to(device), refer_padded.to(device)
                     lengths, refer_lengths = torch.tensor(mel_recon_padded.size(2),dtype=torch.long).to(device).unsqueeze(0),\
                         torch.tensor(refer_padded.size(2),dtype=torch.long).to(device).unsqueeze(0)
+                    mel_recon_padded, refer_padded = normalize_tacotron_mel(mel_recon_padded), normalize_tacotron_mel(refer_padded)
                     with torch.no_grad():
-                        mel = self.ema_model.sample(mel_recon_padded, refer_padded, lengths, refer_lengths)
+                        # mel = self.ema_model.sample(mel_recon_padded, refer_padded, lengths, refer_lengths)
+                        mel = do_spectrogram_diffusion(self.ema_model, self.infer_diffuser,mel_recon_padded,refer_padded,temperature=0.8)
                         mel = mel.detach().cpu()
-
+                    mel_recon_padded = denormalize_tacotron_mel(mel_recon_padded)
                     image_dict = {
+                        f"recon/mel": plot_spectrogram_to_numpy(mel_recon_padded[0, :, :].detach().unsqueeze(-1).cpu()),
                         f"gt/mel": plot_spectrogram_to_numpy(mel_padded[0, :, :].detach().unsqueeze(-1).cpu()),
                         f"gen/mel": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                     }

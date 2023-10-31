@@ -3,34 +3,30 @@ import random
 import uuid
 from time import time
 from urllib import request
-from ttts.vocoder.vocos import Vocos
 
 import torch
 import torch.nn.functional as F
 import progressbar
 import torchaudio
 
+from tqdm import tqdm
 from ttts.diffusion.model import DiffusionTts
 from ttts.gpt.model import UnifiedVoice
-from tqdm import tqdm
-from ttts.utils.utils import TorchMelSpectrogram
+from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
 from ttts.clvp.model import CLVP
-from ttts.utils.random_latent_generator import RandomLatentConverter
-# from tortoise.models.vocoder import UnivNetGenerator
-# from tortoise.utils.audio import wav_to_univnet_mel, denormalize_tacotron_mel
+from ttts.diffusion.diffusion_util import denormalize_tacotron_mel
 from ttts.utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
 from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 from ttts.utils.wav2vec_alignment import Wav2VecAlignment
 from contextlib import contextmanager
 from huggingface_hub import hf_hub_download
-
-from diffusion.train import denormalize_tacotron_mel
 pbar = None
 
 DEFAULT_MODELS_DIR = os.path.join(os.path.expanduser('~'), '.cache', 'tortoise', 'models')
 MODELS_DIR = os.environ.get('TORTOISE_MODELS_DIR', DEFAULT_MODELS_DIR)
 MODELS = {
     'autoregressive.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/autoregressive.pth',
+    'classifier.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/classifier.pth',
     'clvp2.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/clvp2.pth',
     'diffusion_decoder.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/diffusion_decoder.pth',
     'vocoder.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/vocoder.pth',
@@ -118,7 +114,7 @@ def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_la
     Uses the specified diffusion model to convert discrete codes into a spectrogram.
     """
     with torch.no_grad():
-        output_seq_len = latents.shape[1] * 4 # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
+        output_seq_len = latents.shape[1] * 4 * 24000 // 22050  # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
         output_shape = (latents.shape[0], 100, output_seq_len)
         precomputed_embeddings = diffusion_model.timestep_independent(latents, conditioning_latents, output_seq_len, False)
 
@@ -211,10 +207,11 @@ class TextToSpeech:
                          num_speech_tokens=8192, speech_enc_depth=20, speech_heads=12, speech_seq_len=430,
                          use_xformers=True).cpu().eval()
         self.clvp.load_state_dict(torch.load(get_model_path('clvp2.pth', models_dir)))
+        self.cvvp = None # CVVP model is only loaded if used.
 
-        self.vocoder = Vocos.from_pretrained("pretrained_models/pytorch_model.bin","vocoder/config.yaml").cpu()
-        # self.vocoder.load_state_dict(torch.load(get_model_path('vocoder.pth', models_dir), map_location=torch.device('cpu'))['model_g'])
-        # self.vocoder.eval(inference=True)
+        self.vocoder = UnivNetGenerator().cpu()
+        self.vocoder.load_state_dict(torch.load(get_model_path('vocoder.pth', models_dir), map_location=torch.device('cpu'))['model_g'])
+        self.vocoder.eval(inference=True)
 
         # Random latent generators (RLGs) are loaded lazily.
         self.rlg_auto = None
@@ -248,11 +245,9 @@ class TextToSpeech:
             diffusion_conds = []
             for sample in voice_samples:
                 # The diffuser operates at a sample rate of 24000 (except for the latent inputs)
-                # sample = torchaudio.functional.resample(sample, 22050, 24000)
-                sample = pad_or_truncate(sample, 120000)
-                from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
-                cond_mel = MelSpectrogramFeatures()(sample)
-                # cond_mel = wav_to_univnet_mel(sample.to(self.device), do_normalization=False, device=self.device)
+                sample = torchaudio.functional.resample(sample, 22050, 24000)
+                sample = pad_or_truncate(sample, 102400)
+                cond_mel = wav_to_univnet_mel(sample.to(self.device), do_normalization=False, device=self.device)
                 diffusion_conds.append(cond_mel)
             diffusion_conds = torch.stack(diffusion_conds, dim=1)
 
@@ -264,16 +259,6 @@ class TextToSpeech:
             return auto_latent, diffusion_latent, auto_conds, diffusion_conds
         else:
             return auto_latent, diffusion_latent
-
-    def get_random_conditioning_latents(self):
-        # Lazy-load the RLG models.
-        if self.rlg_auto is None:
-            self.rlg_auto = RandomLatentConverter(1024).eval()
-            self.rlg_auto.load_state_dict(torch.load(get_model_path('rlg_auto.pth', self.models_dir), map_location=torch.device('cpu')))
-            self.rlg_diffusion = RandomLatentConverter(2048).eval()
-            self.rlg_diffusion.load_state_dict(torch.load(get_model_path('rlg_diffuser.pth', self.models_dir), map_location=torch.device('cpu')))
-        with torch.no_grad():
-            return self.rlg_auto(torch.tensor([0.0])), self.rlg_diffusion(torch.tensor([0.0]))
 
     def tts_with_preset(self, text, preset='fast', **kwargs):
         """
@@ -302,6 +287,8 @@ class TextToSpeech:
             return_deterministic_state=False,
             # autoregressive generation parameters follow
             num_autoregressive_samples=512, temperature=.8, length_penalty=1, repetition_penalty=2.0, top_p=.8, max_mel_tokens=500,
+            # CVVP parameters follow
+            cvvp_amount=.0,
             # diffusion generation parameters follow
             diffusion_iterations=100, cond_free=True, cond_free_k=2, diffusion_temperature=1.0,
             **hf_generate_kwargs):
@@ -327,6 +314,9 @@ class TextToSpeech:
                                  I was interested in the premise, but the results were not as good as I was hoping. This is off by default, but
                                  could use some tuning.
         :param typical_mass: The typical_mass parameter from the typical_sampling algorithm.
+        ~~CLVP-CVVP KNOBS~~
+        :param cvvp_amount: Controls the influence of the CVVP model in selecting the best output from the autoregressive model.
+                            [0,1]. Values closer to 1 mean the CVVP model is more important, 0 disables the CVVP model.
         ~~DIFFUSION KNOBS~~
         :param diffusion_iterations: Number of diffusion steps to perform. [0,4000]. More steps means the network has more chances to iteratively refine
                                      the output, which should theoretically mean a higher quality output. Generally a value above 250 is not noticeably better,
@@ -358,7 +348,8 @@ class TextToSpeech:
         elif conditioning_latents is not None:
             auto_conditioning, diffusion_conditioning = conditioning_latents
         else:
-            auto_conditioning, diffusion_conditioning = self.get_random_conditioning_latents()
+            print("need input conditioning latents")
+            # auto_conditioning, diffusion_conditioning = self.get_random_conditioning_latents()
         auto_conditioning = auto_conditioning.to(self.device)
         diffusion_conditioning = diffusion_conditioning.to(self.device)
 
@@ -409,28 +400,66 @@ class TextToSpeech:
                 with self.temporary_cuda(self.clvp) as clvp, torch.autocast(
                     device_type="cuda" if not torch.backends.mps.is_available() else 'mps', dtype=torch.float16, enabled=self.half
                 ):
+                    if cvvp_amount > 0:
+                        if self.cvvp is None:
+                            self.load_cvvp()
+                        self.cvvp = self.cvvp.to(self.device)
                     if verbose:
-                        print("Computing best candidates using CLVP")
+                        if self.cvvp is None:
+                            print("Computing best candidates using CLVP")
+                        else:
+                            print(f"Computing best candidates using CLVP {((1-cvvp_amount) * 100):2.0f}% and CVVP {(cvvp_amount * 100):2.0f}%")
                     for batch in tqdm(samples, disable=not verbose):
                         for i in range(batch.shape[0]):
                             batch[i] = fix_autoregressive_output(batch[i], stop_mel_token)
-                        clvp_out = clvp(text_tokens.repeat(batch.shape[0], 1), batch, return_loss=False)
-                        clip_results.append(clvp_out)
+                        if cvvp_amount != 1:
+                            clvp_out = clvp(text_tokens.repeat(batch.shape[0], 1), batch, return_loss=False)
+                        if auto_conds is not None and cvvp_amount > 0:
+                            cvvp_accumulator = 0
+                            for cl in range(auto_conds.shape[1]):
+                                cvvp_accumulator = cvvp_accumulator + self.cvvp(auto_conds[:, cl].repeat(batch.shape[0], 1, 1), batch, return_loss=False)
+                            cvvp = cvvp_accumulator / auto_conds.shape[1]
+                            if cvvp_amount == 1:
+                                clip_results.append(cvvp)
+                            else:
+                                clip_results.append(cvvp * cvvp_amount + clvp_out * (1-cvvp_amount))
+                        else:
+                            clip_results.append(clvp_out)
                     clip_results = torch.cat(clip_results, dim=0)
                     samples = torch.cat(samples, dim=0)
                     best_results = samples[torch.topk(clip_results, k=k).indices]
             else:
                 with self.temporary_cuda(self.clvp) as clvp:
+                    if cvvp_amount > 0:
+                        if self.cvvp is None:
+                            self.load_cvvp()
+                        self.cvvp = self.cvvp.to(self.device)
                     if verbose:
-                        print("Computing best candidates using CLVP")
+                        if self.cvvp is None:
+                            print("Computing best candidates using CLVP")
+                        else:
+                            print(f"Computing best candidates using CLVP {((1-cvvp_amount) * 100):2.0f}% and CVVP {(cvvp_amount * 100):2.0f}%")
                     for batch in tqdm(samples, disable=not verbose):
                         for i in range(batch.shape[0]):
                             batch[i] = fix_autoregressive_output(batch[i], stop_mel_token)
-                        clvp_out = clvp(text_tokens.repeat(batch.shape[0], 1), batch, return_loss=False)
-                        clip_results.append(clvp_out)
+                        if cvvp_amount != 1:
+                            clvp_out = clvp(text_tokens.repeat(batch.shape[0], 1), batch, return_loss=False)
+                        if auto_conds is not None and cvvp_amount > 0:
+                            cvvp_accumulator = 0
+                            for cl in range(auto_conds.shape[1]):
+                                cvvp_accumulator = cvvp_accumulator + self.cvvp(auto_conds[:, cl].repeat(batch.shape[0], 1, 1), batch, return_loss=False)
+                            cvvp = cvvp_accumulator / auto_conds.shape[1]
+                            if cvvp_amount == 1:
+                                clip_results.append(cvvp)
+                            else:
+                                clip_results.append(cvvp * cvvp_amount + clvp_out * (1-cvvp_amount))
+                        else:
+                            clip_results.append(clvp_out)
                     clip_results = torch.cat(clip_results, dim=0)
                     samples = torch.cat(samples, dim=0)
                     best_results = samples[torch.topk(clip_results, k=k).indices]
+            if self.cvvp is not None:
+                self.cvvp = self.cvvp.cpu()
             del samples
 
             # The diffusion model actually wants the last hidden layer from the autoregressive model as conditioning

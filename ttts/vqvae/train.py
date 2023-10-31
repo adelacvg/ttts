@@ -33,7 +33,7 @@ def cycle(dl):
         for data in dl:
             yield data
 class Trainer(object):
-    def __init__(self, cfg_path='vqvae/config.json'):
+    def __init__(self, cfg_path='ttts/vqvae/config.json'):
         self.accelerator = Accelerator()
         self.cfg = json.load(open(cfg_path))
         self.vqvae = DiscreteVAE(**self.cfg['vqvae'])
@@ -104,6 +104,9 @@ class Trainer(object):
                 if accelerator.is_main_process:
                     update_moving_average(self.ema_updater,self.ema_model,self.vqvae)
                 if accelerator.is_main_process and self.step % self.val_freq == 0:
+                    a = self.ema_model.get_codebook_indices(mel[0].unsqueeze(0))
+                    b = self.ema_model.get_codebook_indices(mel[0].unsqueeze(0))
+                    assert a.equal(b)
                     scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm}
                     image_dict = {
                         "all/spec": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
@@ -127,4 +130,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-10-31-02-22-47/model-0.pt')
     trainer.train()

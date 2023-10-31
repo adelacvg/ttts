@@ -231,8 +231,10 @@ class DiffusionTts(nn.Module):
 
     def timestep_independent(self, aligned_conditioning, conditioning_latent, expected_seq_len, return_code_pred):
         # Shuffle aligned_latent to BxCxS format
-        if is_latent(aligned_conditioning):
-            aligned_conditioning = aligned_conditioning.permute(0, 2, 1)
+        # if is_latent(aligned_conditioning):
+        #     aligned_conditioning = aligned_conditioning.permute(0, 2, 1)
+        if len(conditioning_latent.shape)>2:
+            conditioning_latent = self.get_conditioning(conditioning_latent)
 
         cond_scale, cond_shift = torch.chunk(conditioning_latent, 2, dim=1)
         if is_latent(aligned_conditioning):
@@ -274,6 +276,8 @@ class DiffusionTts(nn.Module):
         assert precomputed_aligned_embeddings is not None or (aligned_conditioning is not None and conditioning_latent is not None)
         assert not (return_code_pred and precomputed_aligned_embeddings is not None)  # These two are mutually exclusive.
 
+        if conditioning_latent is not None and len(conditioning_latent.shape)>2:
+            conditioning_latent = self.get_conditioning(conditioning_latent)
         unused_params = []
         if conditioning_free:
             code_emb = self.unconditioned_embedding.repeat(x.shape[0], 1, x.shape[-1])
@@ -330,6 +334,7 @@ if __name__ == '__main__':
     ts = torch.LongTensor([600, 600])
     model = DiffusionTts(512, layer_drop=.3, unconditioned_percentage=.5)
     # Test with latent aligned conditioning
-    #o = model(clip, ts, aligned_latent, cond)
+    o = model(clip, ts, aligned_latent, cond)
+    # print(o)
     # Test with sequence aligned conditioning
-    o = model(clip, ts, aligned_sequence, cond)
+    # o = model(clip, ts, aligned_sequence, cond)

@@ -33,6 +33,19 @@ from einops.layers.torch import Rearrange
 import utils
 
 from tqdm.auto import tqdm
+TACOTRON_MEL_MAX = 5.5451774444795624753378569716654
+TACOTRON_MEL_MIN = -16.118095650958319788125940182791
+# TACOTRON_MEL_MIN = -11.512925464970228420089957273422
+# -16.118095650958319788125940182791
+
+
+def denormalize_tacotron_mel(norm_mel):
+    return ((norm_mel+1)/2)*(TACOTRON_MEL_MAX-TACOTRON_MEL_MIN)+TACOTRON_MEL_MIN
+
+
+def normalize_tacotron_mel(mel):
+    return 2 * ((mel - TACOTRON_MEL_MIN) / (TACOTRON_MEL_MAX - TACOTRON_MEL_MIN)) - 1
+
 
 def exists(x):
     return x is not None
@@ -259,6 +272,7 @@ class Pre_model(nn.Module):
         self.ref_enc = TextTimeEmbedding(100, 100, 1)
     def forward(self,data, g=None):
         mel_recon_padded, mel_padded, mel_lengths, refer_padded, refer_lengths = data
+        mel_recon_padded, refer_padded = normalize_tacotron_mel(mel_recon_padded), normalize_tacotron_mel(refer_padded)
         g = self.ref_enc(refer_padded.transpose(1,2)).unsqueeze(-1)
         audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
         content = self.phoneme_encoder(mel_recon_padded, mel_lengths, g)
@@ -266,6 +280,7 @@ class Pre_model(nn.Module):
         return content, audio_prompt
     def infer(self, data):
         mel_recon_padded, refer_padded, mel_lengths, refer_lengths = data
+        mel_recon_padded, refer_padded = normalize_tacotron_mel(mel_recon_padded), normalize_tacotron_mel(refer_padded)
         g = self.ref_enc(refer_padded.transpose(1,2)).unsqueeze(-1)
         audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
         content = self.phoneme_encoder(mel_recon_padded, mel_lengths, g)
@@ -357,7 +372,7 @@ class Diffuser(nn.Module):
         timesteps, = betas.shape
         self.num_timesteps = timesteps
 
-        self.unconditioned_refer = nn.Parameter(torch.randn(1,100,200))
+        self.unconditioned_content = nn.Parameter(torch.randn(1,cfg['phoneme_encoder']['out_channels'],1))
 
         # self.sampling_timesteps = cfg['train']['sampling_timesteps']
         self.ddim_sampling_eta = ddim_sampling_eta
@@ -410,6 +425,7 @@ class Diffuser(nn.Module):
         return ModelPrediction(pred_noise, x_start)
     def sample_fun(self, x, t, data = None):
         if self.conditioning_free:
+            # data[1] = self.unconditioned_refer[]
             model_output_no_conditioning = self.diff_model(x, data, t)
         model_output = self.diff_model(x,data, t)
         t = t.type(torch.int64) 
@@ -503,6 +519,7 @@ class Diffuser(nn.Module):
         # c, refer, f0, uv, lengths, refer_lengths, vocos,
          sampling_timesteps=100, sample_method='unipc'
         ):
+        mel_recon, refer = normalize_tacotron_mel(mel_recon), normalize_tacotron_mel(refer)
         if refer.shape[0]==2:
             refer = refer[0].unsqueeze(0)
         self.sampling_timesteps = sampling_timesteps
@@ -589,7 +606,7 @@ class Diffuser(nn.Module):
         #     audio = rearrange(audio, 'b 1 n -> b n')
 
         # return denormalize(mel)
-        return mel 
+        return denormalize_tacotron_mel(mel)
 
     def q_sample(self, x_start, t, noise = None):
         noise = default(noise, lambda: torch.randn_like(x_start))
@@ -601,17 +618,19 @@ class Diffuser(nn.Module):
 
     def forward(self, data, conditioning_free=False):
         unused_params = []
-        if conditioning_free==True:
-            refer = self.unconditioned_refer.repeat(data[0].shape[0], 1 ,1)
-        else:
-            unused_params.append(self.unconditioned_refer)
         mel_recon_padded, mel_padded, mel_lengths, refer_padded, refer_lengths = data
+        mel_recon_padded, mel_padded = normalize_tacotron_mel(mel_recon_padded), normalize_tacotron_mel(mel_recon_padded)
         assert mel_recon_padded.shape[2] == mel_padded.shape[2]
         b, d, n, device = *mel_padded.shape, mel_padded.device
         x_mask = torch.unsqueeze(commons.sequence_mask(mel_lengths, mel_padded.size(2)), 1).to(mel_padded.dtype)
         x_start = mel_padded*x_mask
         # get pre model outputs
         content, refer = self.pre_model(data)
+
+        if conditioning_free==True:
+            refer = self.unconditioned_refer.repeat(data[0].shape[0], 1 ,1) + refer.mean()*0
+        else:
+            unused_params.append(self.unconditioned_refer)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         noise = torch.randn_like(x_start)*x_mask

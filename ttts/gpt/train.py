@@ -1,5 +1,6 @@
 import copy
 from datetime import datetime
+import torch.autograd.profiler as profiler
 import json
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
@@ -38,7 +39,7 @@ def warmup(step):
     else:
         return 1
 class Trainer(object):
-    def __init__(self, cfg_path='gpt/config.json'):
+    def __init__(self, cfg_path='ttts/gpt/config.json'):
         self.accelerator = Accelerator()
         self.cfg = json.load(open(cfg_path))
         self.gpt = UnifiedVoice(**self.cfg['gpt'])
@@ -91,6 +92,8 @@ class Trainer(object):
         with tqdm(initial = self.step, total = self.train_steps, disable = not accelerator.is_main_process) as pbar:
             while self.step < self.train_steps:
                 total_loss = 0.
+
+                # with profiler.profile(with_stack=True, profile_memory=True) as prof:
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dataloader)
                     if data==None:
@@ -104,8 +107,8 @@ class Trainer(object):
                         loss = loss_text*self.text_loss_weight + loss_mel*self.mel_loss_weight
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
-
                     self.accelerator.backward(loss)
+
                 grad_norm = get_grad_norm(self.gpt)
                 accelerator.clip_grad_norm_(self.gpt.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
@@ -114,6 +117,7 @@ class Trainer(object):
                 self.optimizer.zero_grad()
                 self.scheduler.step()
                 accelerator.wait_for_everyone()
+                # print(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total', row_limit=5))
                 if accelerator.is_main_process:
                     update_moving_average(self.ema_updater,self.ema_model,self.gpt)
                 if accelerator.is_main_process and self.step % self.val_freq == 0:

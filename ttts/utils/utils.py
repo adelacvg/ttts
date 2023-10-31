@@ -11,23 +11,6 @@ import torch.nn.functional as F
 import torchaudio
 from ttts.utils.xtransformers import ContinuousTransformerWrapper, RelativePositionBias
 import glob
-from ttts.vqvae.dvae import DiscreteVAE
-import json
-
-def load_model(model_name, model_path, config_path, device):
-    config = json.load(open(config_path))
-    if model_name=='vqvae':
-        model = DiscreteVAE(**config['vqvae'])
-        sd = torch.load(model_path, map_location=device)['model']
-        model.load_state_dict(sd, strict=True)
-        model = model.to(device)
-    # elif model_name=='gpt':
-
-    # elif model_name=='clvp':
-
-    # elif model_name=='diffusion':
-    
-    return model.eval()
 
 def get_paths_with_cache(search_path, cache_path):
     out_paths=None

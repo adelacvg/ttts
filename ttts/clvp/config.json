@@ -5,11 +5,11 @@
     "save_freq" : 1000,
     "keep_ckpts" : 3,
     "lr":3e-4,
-    "logs_folder":"clvp/logs",
+    "logs_folder":"ttts/clvp/logs",
     "accumulate_num":5
   },
   "dataset": {
-    "path":"datasets/all_data.jsonl"
+    "path":"ttts/datasets/all_data.jsonl"
   },
   "clvp":{
     "text_enc_depth":20,
