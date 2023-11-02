@@ -146,7 +146,7 @@ class DiscreteVAE(nn.Module):
         self.loss_fn = F.smooth_l1_loss if smooth_l1_loss else F.mse_loss
 
         if use_lr_quantizer:
-            self.codebook = VectorQuantize(dim=codebook_dim, codebook_size=num_tokens, **lr_quantizer_args, kmeans_init = True,threshold_ema_dead_code = 2)
+            self.codebook = VectorQuantize(dim=codebook_dim, codebook_size=num_tokens, **lr_quantizer_args)
         else:
             self.codebook = Quantize(codebook_dim, num_tokens, new_return_order=True)
 

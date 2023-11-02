@@ -11,7 +11,8 @@
     "timesteps":1000
   },
   "dataset": {
-    "path":"ttts/datasets/all_data.jsonl"
+    "path":"ttts/datasets/all_data.jsonl",
+    "gpt_path":"/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-10-31-10-32-35/model-9.pt"
   },
   "prompt_encoder":{
     "in_channels":100,
@@ -25,7 +26,7 @@
     "num_layers":10, 
     "in_channels":100, 
     "out_channels":200,
-    "in_latent_channels":100, 
+    "in_latent_channels":1024, 
     "in_tokens":8193, 
     "dropout":0, 
     "use_fp16":false, 

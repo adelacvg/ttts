@@ -10,6 +10,7 @@ import torchaudio
 from pypinyin import Style, lazy_pinyin
 
 from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
+from ttts.utils.infer_utils import load_model
 import json
 import os
 
@@ -31,33 +32,36 @@ class DiffusionDataset(torch.utils.data.Dataset):
     def __init__(self, opt):
         self.jsonl_path = opt['dataset']['path']
         self.audiopaths_and_text = read_jsonl(self.jsonl_path)
-
+        # self.gpt = load_model('gpt',opt['dataset']['gpt_path'],'ttts/gpt/config.json','cuda')
+        self.tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
     def __getitem__(self, index):
         # Fetch text and add start/stop tokens.
         audiopath_and_text = self.audiopaths_and_text[index]
         audiopath, text = audiopath_and_text['path'], audiopath_and_text['text']
-        # Fetch quantized MELs
-        mel_recon_path = audiopath + '.melrecon.pth'
-        mel_recon_raw = torch.load(mel_recon_path)[0]
+        text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
+        text = self.tok.encode(text)
+        text_tokens = LongTensor(text)
 
         mel_path = audiopath + '.mel.pth'
         mel_raw = torch.load(mel_path)[0]
-        split = random.randint(int(mel_raw.shape[1]//3), int(mel_raw.shape[1]//3*2))
 
+        quant_path = audiopath + '.melvq.pth'
+        mel_codes = LongTensor(torch.load(quant_path)[0])
+
+        split = random.randint(int(mel_raw.shape[1]//3), int(mel_raw.shape[1]//3*2))
         if random.random()>0.5:
-            mel_recon = mel_recon_raw[:,:split]
-            mel = mel_raw[:,:split]
             mel_refer = mel_raw[:,split:]
         else:
-            mel_recon = mel_recon_raw[:,split:]
-            mel = mel_raw[:,split:]
             mel_refer = mel_raw[:,:split]
-        if mel.shape[1]>200:
-            mel_recon = mel_recon[:,:200]
-            mel = mel[:,:200]
-        if mel_refer.shape[1]>100:
-            mel_refer = mel_refer[:,:100]
-        return mel_recon, mel, mel_refer
+        if mel_refer.shape[1]>200:
+            mel_refer = mel_refer[:,:200]
+        #text_token mel_codes 
+
+        if mel_raw.shape[1]>400:
+            mel_raw = mel_raw[:,:400]
+            mel_codes = mel_codes[:100]
+
+        return text_tokens, mel_codes, mel_raw, mel_refer
 
     def __len__(self):
         return len(self.audiopaths_and_text)
@@ -71,27 +75,33 @@ class DiffusionCollater():
         batch = [x for x in batch if x is not None]
         if len(batch)==0:
             return None
-        mel_recon_lens = [x[0].shape[1] for x in batch]
-        max_mel_recon_len = max(mel_recon_lens)
-        mel_lens = [x[1].shape[1] for x in batch]
+        text_lens = [len(x[0]) for x in batch]
+        max_text_len = max(text_lens)
+        mel_code_lens = [len(x[1]) for x in batch]
+        max_mel_code_len = max(mel_code_lens)
+        mel_lens = [x[2].shape[1] for x in batch]
         max_mel_len = max(mel_lens)
-        mel_refer_lens = [x[2].shape[1] for x in batch]
+        mel_refer_lens = [x[3].shape[1] for x in batch]
         max_mel_refer_len = max(mel_refer_lens)
-        mel_recons = []
+        texts = []
+        mel_codes = []
         mels = []
         mel_refers = []
         # This is the sequential "background" tokens that are used as padding for text tokens, as specified in the DALLE paper.
         for b in batch:
-            mel_recon, mel, mel_refer = b
-            mel_recons.append(F.pad(mel_recon, (0, max_mel_recon_len-mel_recon.shape[1]), value=0))
+            text_token, mel_code, mel, mel_refer = b
+            texts.append(F.pad(text_token,(0,max_text_len-len(text_token)), value=0))
+            mel_codes.append(F.pad(mel_code,(0,max_mel_code_len-len(mel_code)), value=0))
             mels.append(F.pad(mel,(0, max_mel_len-mel.shape[1]), value=0))
             mel_refers.append(F.pad(mel_refer,(0, max_mel_refer_len-mel_refer.shape[1]), value=0))
 
-        padded_mel_recon = torch.stack(mel_recons)
+        padded_text = torch.stack(texts)
+        padded_mel_code = torch.stack(mel_codes)
         padded_mel = torch.stack(mels)
         padded_mel_refer = torch.stack(mel_refers)
         return {
-            'padded_mel_recon': padded_mel_recon,
+            'padded_text': padded_text,
+            'padded_mel_code': padded_mel_code,
             'padded_mel': padded_mel,
             'mel_lengths': LongTensor(mel_lens),
             'padded_mel_refer':padded_mel_refer,
@@ -108,7 +118,7 @@ if __name__ == '__main__':
         'batch_size': 16,
         'mel_vocab_size': 512,
     }
-    cfg = json.load(open('diffusion/config.json'))
+    cfg = json.load(open('ttts/diffusion/config.json'))
     ds = DiffusionDataset(cfg)
     dl = torch.utils.data.DataLoader(ds, **cfg['dataloader'], collate_fn=DiffusionCollater())
     i = 0

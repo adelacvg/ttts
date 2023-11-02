@@ -294,6 +294,7 @@ class DiffusionTts(nn.Module):
                     unused_params.extend(list(self.latent_conditioner.parameters()))
 
             unused_params.append(self.unconditioned_embedding)
+        unused_params.extend(list(self.mel_head.parameters()))
 
         time_emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         code_emb = self.conditioning_timestep_integrator(code_emb, time_emb)

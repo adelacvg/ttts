@@ -1,5 +1,6 @@
 import torchaudio
 from ttts.diffusion.diffusion_util import denormalize_tacotron_mel, normalize_tacotron_mel
+from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 from ttts.utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
 import torch
 import copy
@@ -8,6 +9,7 @@ import json
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from ttts.utils.infer_utils import load_model
 from ttts.utils.utils import EMA, clean_checkpoints, plot_spectrogram_to_numpy, summarize, update_moving_average
 from ttts.diffusion.dataset import DiffusionDataset, DiffusionCollater
 from ttts.diffusion.model import DiffusionTts
@@ -54,8 +56,8 @@ def get_grad_norm(model):
             param_norm = p.grad.data.norm(2)
             total_norm += param_norm.item() ** 2
         except:
+            print(name)
             pass
-            # print(name)
     total_norm = total_norm ** (1. / 2) 
     return total_norm
 def cycle(dl):
@@ -78,6 +80,10 @@ class Trainer(object):
         desired_diffusion_steps = 200
         self.desired_diffusion_steps = 200
         cond_free_k = 2.
+
+        self.gpt = load_model('gpt',self.cfg['dataset']['gpt_path'],'ttts/gpt/config.json','cuda')
+        self.mel_length_compression  = self.gpt.mel_length_compression
+
         self.diffuser= SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]), model_mean_type='epsilon',
                            model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
                            conditioning_free=False, conditioning_free_k=cond_free_k)
@@ -99,7 +105,7 @@ class Trainer(object):
         self.ema_updater = EMA(0.999)
         self.optimizer = AdamW(self.diffusion.parameters(),lr=self.cfg['train']['lr'], betas=(0.9, 0.999), weight_decay=0.01)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=warmup)
-        self.diffusion, self.dataloader, self.optimizer, self.scheduler = self.accelerator.prepare(self.diffusion, self.dataloader, self.optimizer, self.scheduler)
+        self.diffusion, self.dataloader, self.optimizer, self.scheduler, self.gpt = self.accelerator.prepare(self.diffusion, self.dataloader, self.optimizer, self.scheduler, self.gpt)
         self.dataloader = cycle(self.dataloader)
         self.step=0
         self.gradient_accumulate_every=self.cfg['train']['accumulate_num']
@@ -140,9 +146,16 @@ class Trainer(object):
                     data = next(self.dataloader)
                     if data==None:
                         continue
+                        
+                    with torch.no_grad():
+                        latent = self.gpt(data['padded_mel_refer'], data['padded_text'],
+                            torch.tensor([data['padded_text'].shape[-1]], device=device), data['padded_mel_code'],
+                            torch.tensor([data['padded_mel_code'].shape[-1]*self.mel_length_compression], device=device),
+                            return_latent=True, clip_inputs=False).transpose(1,2)
+
                     # mel_recon_padded, mel_padded, mel_lengths, refer_padded, refer_lengths
                     x_start = normalize_tacotron_mel(data['padded_mel'].to(device))
-                    aligned_conditioning = normalize_tacotron_mel(data['padded_mel_recon'].to(device))
+                    aligned_conditioning = latent 
                     conditioning_latent = normalize_tacotron_mel(data['padded_mel_refer'].to(device))
                     t = torch.randint(0, self.desired_diffusion_steps, (x_start.shape[0],), device=device).long().to(device)
                     with self.accelerator.autocast():
@@ -179,20 +192,21 @@ class Trainer(object):
                 if accelerator.is_main_process and self.step % self.cfg['train']['save_freq'] == 0:
                     self.ema_model.eval()
                     data = next(self.eval_dataloader)
-                    mel_recon_padded, mel_padded, mel_lengths,\
-                    refer_padded, refer_lengths = data['padded_mel_recon'], data['padded_mel'], data['mel_lengths'], data['padded_mel_refer'], data['mel_refer_lengths']
+                    text_padded, mel_code_padded, mel_padded, mel_lengths,\
+                    refer_padded, refer_lengths = data['padded_text'].to(device), data['padded_mel_code'].to(device), data['padded_mel'], data['mel_lengths'], data['padded_mel_refer'].to(device), data['mel_refer_lengths']
 
-                    mel_recon_padded, refer_padded = mel_recon_padded.to(device), refer_padded.to(device)
-                    lengths, refer_lengths = torch.tensor(mel_recon_padded.size(2),dtype=torch.long).to(device).unsqueeze(0),\
-                        torch.tensor(refer_padded.size(2),dtype=torch.long).to(device).unsqueeze(0)
-                    mel_recon_padded, refer_padded = normalize_tacotron_mel(mel_recon_padded), normalize_tacotron_mel(refer_padded)
+                    text_padded, mel_code_padded, refer_padded = text_padded.to(device), mel_code_padded.to(device), refer_padded.to(device)
+                    with torch.no_grad():
+                        latent = self.gpt(refer_padded, text_padded,
+                            torch.tensor([text_padded.shape[-1]], device=device), mel_code_padded,
+                            torch.tensor([mel_code_padded.shape[-1]*self.mel_length_compression], device=device),
+                            return_latent=True, clip_inputs=False).transpose(1,2)
+                    refer_padded = normalize_tacotron_mel(refer_padded)
                     with torch.no_grad():
                         # mel = self.ema_model.sample(mel_recon_padded, refer_padded, lengths, refer_lengths)
-                        mel = do_spectrogram_diffusion(self.ema_model, self.infer_diffuser,mel_recon_padded,refer_padded,temperature=0.8)
+                        mel = do_spectrogram_diffusion(self.ema_model, self.infer_diffuser,latent,refer_padded,temperature=0.8)
                         mel = mel.detach().cpu()
-                    mel_recon_padded = denormalize_tacotron_mel(mel_recon_padded)
                     image_dict = {
-                        f"recon/mel": plot_spectrogram_to_numpy(mel_recon_padded[0, :, :].detach().unsqueeze(-1).cpu()),
                         f"gt/mel": plot_spectrogram_to_numpy(mel_padded[0, :, :].detach().unsqueeze(-1).cpu()),
                         f"gen/mel": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                     }

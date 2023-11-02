@@ -1,3 +1,4 @@
+
 import functools
 import multiprocessing
 import os
@@ -5,15 +6,21 @@ import os
 import torch
 import torchaudio
 from tqdm import tqdm
+from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
 from ttts.utils.utils import find_audio_files, get_paths_with_cache
 from ttts.utils.infer_utils import load_model
 
 def process_one(paths):
-    vqvae = load_model('vqvae', model_path, 'ttts/vqvae/config.json', 'cuda')
-    mel_extractor = MelSpectrogramFeatures().cuda()
+    gpt_path = '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-10-31-10-32-35/model-9.pt'
+    gpt = load_model('gpt',gpt_path,'ttts/gpt/config.json','cuda')
+    tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
     with torch.no_grad():
         for path in tqdm(paths):
+            latent = gpt(mel_refer, text_tokens,
+                torch.tensor([text_tokens.shape[-1]], device=text_tokens.device), mel_codes,
+                torch.tensor([mel_codes.shape[-1]*self.gpt.mel_length_compression], device=text_tokens.device),
+                return_latent=True, clip_inputs=False)
             try:
                 audio,sr = torchaudio.load(path)
             except Exception as e:
@@ -23,21 +30,11 @@ def process_one(paths):
             if audio.shape[0]>1:
                 audio = audio[0].unsqueezze(0)
             audio = torchaudio.transforms.Resample(sr,24000)(audio).cuda()
-            audio_length = audio.shape[1]
-            # pad_to = int(audio_length/256/8+1)*256*8
-            # audio = torch.nn.functional.pad(audio, (0, pad_to-audio_length)) 
             mel = mel_extractor(audio)
             code = vqvae.get_codebook_indices(mel)
-            # code = code[:,:int(audio_length//1024)+4]
             outp = path+'.melvq.pth'
-            mel_recon, _ = vqvae.infer(mel)
-            mel_recon_outp = path+'.melrecon.pth'
-            assert abs(mel.shape[2]-mel_recon.shape[2])<=3
-            mel_len = min(mel.shape[2],mel_recon.shape[2])
-            mel, mel_recon = mel[:,:,:mel_len], mel_recon[:,:,:mel_len]
             os.makedirs(os.path.dirname(outp), exist_ok=True)
             torch.save(code.tolist(), outp)
-            torch.save(mel_recon.detach().cpu(), mel_recon_outp)
     return 0
     
 
