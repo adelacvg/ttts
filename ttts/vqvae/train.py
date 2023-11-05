@@ -126,7 +126,7 @@ class Trainer(object):
                         images=image_dict,
                         scalars=scalar_dict
                     )
-                if accelerator.is_main_process and self.step % self.cfg['train']['save_freq']:
+                if accelerator.is_main_process and self.step % self.cfg['train']['save_freq']==0:
                     keep_ckpts = self.cfg['train']['keep_ckpts']
                     if keep_ckpts > 0:
                         clean_checkpoints(path_to_models=self.logs_folder, n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
