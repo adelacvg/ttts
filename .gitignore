@@ -4,3 +4,5 @@ ttts/datasets/*
 */**/logs/*
 */**/*.txt
 */**/*.jsonl
+ttts.egg-info/*
+.vscode/*
