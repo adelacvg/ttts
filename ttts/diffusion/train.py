@@ -42,8 +42,8 @@ def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_la
 
         noise = torch.randn(output_shape, device=latents.device) * temperature
         mel = diffuser.p_sample_loop(diffusion_model, output_shape, noise=noise,
-                                      model_kwargs={'precomputed_aligned_embeddings': precomputed_embeddings},
-                                     progress=verbose)
+                                    model_kwargs={'precomputed_aligned_embeddings': precomputed_embeddings},
+                                    progress=verbose)
         return denormalize_tacotron_mel(mel)[:,:,:output_seq_len]
 
 def set_requires_grad(model, val):
@@ -87,9 +87,9 @@ class Trainer(object):
         self.diffuser= SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]), model_mean_type='epsilon',
                            model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
                            conditioning_free=False, conditioning_free_k=cond_free_k)
-        self.infer_diffuser = SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]), model_mean_type='epsilon',
+        self.infer_diffuser = SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [30]), model_mean_type='epsilon',
                            model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
-                           conditioning_free=True, conditioning_free_k=cond_free_k)
+                           conditioning_free=True, conditioning_free_k=cond_free_k,sampler='dpm++2m')
         self.diffusion = DiffusionTts(**self.cfg['diffusion'])
         self.dataset = DiffusionDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'], collate_fn=DiffusionCollater())
@@ -121,7 +121,7 @@ class Trainer(object):
             return
         data = {
             'step': self.step,
-            'model': self.accelerator.get_state_dict(self.ema_model),
+            'model': self.accelerator.get_state_dict(self.diffusion),
         }
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
 
@@ -131,7 +131,7 @@ class Trainer(object):
         data = torch.load(model_path, map_location=device)
         state_dict = data['model']
         self.step = data['step']
-        model = self.accelerator.unwrap_model(self.model)
+        model = self.accelerator.unwrap_model(self.diffusion)
         model.load_state_dict(state_dict)
     def train(self):
         accelerator = self.accelerator
@@ -203,8 +203,8 @@ class Trainer(object):
                             return_latent=True, clip_inputs=False).transpose(1,2)
                     refer_padded = normalize_tacotron_mel(refer_padded)
                     with torch.no_grad():
-                        # mel = self.ema_model.sample(mel_recon_padded, refer_padded, lengths, refer_lengths)
-                        mel = do_spectrogram_diffusion(self.ema_model, self.infer_diffuser,latent,refer_padded,temperature=0.8)
+                        diffusion = self.accelerator.unwrap_model(self.diffusion)
+                        mel = do_spectrogram_diffusion(diffusion, self.infer_diffuser,latent,refer_padded,temperature=0.8)
                         mel = mel.detach().cpu()
                     image_dict = {
                         f"gt/mel": plot_spectrogram_to_numpy(mel_padded[0, :, :].detach().unsqueeze(-1).cpu()),

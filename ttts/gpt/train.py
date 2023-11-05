@@ -72,7 +72,7 @@ class Trainer(object):
             return
         data = {
             'step': self.step,
-            'model': self.accelerator.get_state_dict(self.ema_model),
+            'model': self.accelerator.get_state_dict(self.gpt),
         }
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
 
@@ -82,8 +82,10 @@ class Trainer(object):
         data = torch.load(model_path, map_location=device)
         state_dict = data['model']
         self.step = data['step']
-        model = self.accelerator.unwrap_model(self.model)
-        model.load_state_dict(state_dict)
+        gpt = accelerator.unwrap_model(self.gpt)
+        gpt.load_state_dict(state_dict)
+        if self.accelerator.is_local_main_process:
+            self.ema_model.load_state_dict(state_dict)
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
@@ -118,8 +120,8 @@ class Trainer(object):
                 self.scheduler.step()
                 accelerator.wait_for_everyone()
                 # print(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total', row_limit=5))
-                if accelerator.is_main_process:
-                    update_moving_average(self.ema_updater,self.ema_model,self.gpt)
+                # if accelerator.is_main_process:
+                #     update_moving_average(self.ema_updater,self.ema_model,self.gpt)
                 if accelerator.is_main_process and self.step % self.val_freq == 0:
                     scalar_dict = {"loss": total_loss, "loss_mel":loss_mel, "loss_text":loss_text, "loss/grad": grad_norm, "lr":self.scheduler.get_last_lr()[0]}
                     summarize(

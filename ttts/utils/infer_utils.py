@@ -1,4 +1,4 @@
-from ttts.vqvae.dvae import DiscreteVAE
+from ttts.vqvae.xtts_dvae import DiscreteVAE
 from ttts.diffusion.model import DiffusionTts
 from ttts.gpt.model import UnifiedVoice
 import json

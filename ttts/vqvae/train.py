@@ -6,13 +6,14 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from ttts.utils.utils import EMA, clean_checkpoints, plot_spectrogram_to_numpy, summarize, update_moving_average
 from ttts.vqvae.dataset import PreprocessedMelDataset
-from ttts.vqvae.dvae import DiscreteVAE
 import torch
 import os
 from torch.utils.data import DataLoader
 from torch import nn
 from torch.optim import AdamW
 from accelerate import Accelerator
+
+from ttts.vqvae.xtts_dvae import DiscreteVAE
 
 
 def set_requires_grad(model, val):
@@ -63,7 +64,7 @@ class Trainer(object):
             return
         data = {
             'step': self.step,
-            'model': self.accelerator.get_state_dict(self.ema_model),
+            'model': self.accelerator.get_state_dict(self.vqvae),
         }
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
 
@@ -73,8 +74,10 @@ class Trainer(object):
         data = torch.load(model_path, map_location=device)
         state_dict = data['model']
         self.step = data['step']
-        model = self.accelerator.unwrap_model(self.model)
-        model.load_state_dict(state_dict)
+        vqvae = accelerator.unwrap_model(self.vqvae)
+        vqvae.load_state_dict(state_dict)
+        if self.accelerator.is_local_main_process:
+            self.ema_model.load_state_dict(state_dict)
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
@@ -101,16 +104,21 @@ class Trainer(object):
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 accelerator.wait_for_everyone()
-                if accelerator.is_main_process:
-                    update_moving_average(self.ema_updater,self.ema_model,self.vqvae)
+                # if accelerator.is_main_process:
+                #     update_moving_average(self.ema_updater,self.ema_model,self.vqvae)
                 if accelerator.is_main_process and self.step % self.val_freq == 0:
-                    a = self.ema_model.get_codebook_indices(mel[0].unsqueeze(0))
-                    b = self.ema_model.get_codebook_indices(mel[0].unsqueeze(0))
-                    assert a.equal(b)
+                    with torch.no_grad():
+                        # self.ema_model.eval()
+                        eval_model = self.accelerator.unwrap_model(self.vqvae)
+                        eval_model.eval()
+                        # mel_recon_ema = self.ema_model.infer(mel)[0]
+                        mel_recon_ema = eval_model.infer(mel)[0]
+                        eval_model.train()
                     scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm}
                     image_dict = {
                         "all/spec": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                         "all/spec_pred": plot_spectrogram_to_numpy(mel_recon[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "all/spec_pred_ema": plot_spectrogram_to_numpy(mel_recon_ema[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
                     summarize(
                         writer=writer,
@@ -130,5 +138,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-10-31-02-22-47/model-0.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-00-25-39/model-14.pt')
     trainer.train()

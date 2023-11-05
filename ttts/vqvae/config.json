@@ -18,12 +18,11 @@
     "num_tokens":8192,
     "hidden_dim":512,
     "num_resnet_blocks":3,
-    "codebook_dim":2048,
+    "codebook_dim":512,
     "num_layers":2,
     "positional_dims":1,
     "kernel_size":3,
-    "use_transposed_convs":false,
-    "use_lr_quantizer":true
+    "use_transposed_convs":false
   },
   "dataloader":
   {

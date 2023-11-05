@@ -38,7 +38,7 @@ def main():
             continue
 
         mel = mel_extractor(wave)
-        torch.save(mel.cpu(), outfile)
+        torch.save(mel.cpu().detach(), outfile)
 
 
 if __name__ == '__main__':
