@@ -29,7 +29,6 @@ def process_one(paths):
             os.makedirs(os.path.dirname(outp), exist_ok=True)
             torch.save(code.tolist(), outp)
     return 0
-    
 
 if __name__ == '__main__':
     model_path = '/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-15-44-23/model-36.pt'

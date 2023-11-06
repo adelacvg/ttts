@@ -36,7 +36,7 @@ def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_la
     Uses the specified diffusion model to convert discrete codes into a spectrogram.
     """
     with torch.no_grad():
-        output_seq_len = latents.shape[1] * 4 # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
+        output_seq_len = latents.shape[2] * 4 # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
         output_shape = (latents.shape[0], 100, output_seq_len)
         precomputed_embeddings = diffusion_model.timestep_independent(latents, conditioning_latents, output_seq_len, False)
 
@@ -180,8 +180,8 @@ class Trainer(object):
                 self.optimizer.zero_grad()
                 self.scheduler.step()
                 accelerator.wait_for_everyone()
-                if accelerator.is_main_process:
-                    update_moving_average(self.ema_updater,self.ema_model,self.diffusion)
+                # if accelerator.is_main_process:
+                #     update_moving_average(self.ema_updater,self.ema_model,self.diffusion)
                 if accelerator.is_main_process and self.step % self.val_freq == 0:
                     scalar_dict = {"loss": total_loss, "loss/grad": grad_norm, "lr":self.scheduler.get_last_lr()[0]}
                     summarize(
@@ -228,4 +228,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
+    trainer.load('/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2023-11-06-11-14-20/model-27.pt')
     trainer.train()
