@@ -44,7 +44,7 @@ class Trainer(object):
         self.cfg = json.load(open(cfg_path))
         self.gpt = UnifiedVoice(**self.cfg['gpt'])
         self.dataset = GptTtsDataset(self.cfg)
-        self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'], collate_fn=GptTtsCollater())
+        self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'], collate_fn=GptTtsCollater(self.cfg))
         self.train_steps = self.cfg['train']['train_steps']
         self.val_freq = self.cfg['train']['val_freq']
         if self.accelerator.is_main_process:
@@ -141,5 +141,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('ttts/gpt/logs/2023-11-05-14-35-53/model-3.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-11-05-21-44-13/model-6.pt')
     trainer.train()

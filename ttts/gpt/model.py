@@ -262,7 +262,7 @@ def build_hf_gpt_transformer(layers, model_dim, heads, max_mel_seq_len, max_text
     # Built-in token embeddings are unused.
     del gpt.wte
     return gpt, LearnedPositionEmbeddings(max_mel_seq_len, model_dim), LearnedPositionEmbeddings(max_text_seq_len, model_dim),\
-           None, None
+        None, None
 
 
 class MelEncoder(nn.Module):

@@ -8,7 +8,7 @@
     "logs_folder":"ttts/gpt/logs",
     "text_weight":0.01,
     "mel_weight":1,
-    "accumulate_num":4
+    "accumulate_num":8
   },
   "dataset": {
     "path":"ttts/datasets/all_data.jsonl"
@@ -27,7 +27,7 @@
   },
   "dataloader":
   {
-    "batch_size" : 32,
+    "batch_size" : 16,
     "shuffle": false,
     "num_workers" : 64,
     "drop_last":true, 

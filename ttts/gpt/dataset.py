@@ -68,16 +68,18 @@ class GptTtsDataset(torch.utils.data.Dataset):
 
 class GptTtsCollater():
 
-    def __init__(self):
-        pass
+    def __init__(self,cfg):
+        self.cfg=cfg
     def __call__(self, batch):
         batch = [x for x in batch if x is not None]
         if len(batch)==0:
             return None
         text_lens = [len(x[0]) for x in batch]
         max_text_len = max(text_lens)
+        # max_text_len = self.cfg['gpt']['max_text_tokens']
         qmel_lens = [len(x[1]) for x in batch]
         max_qmel_len = max(qmel_lens)
+        # max_qmel_len = self.cfg['gpt']['max_mel_tokens']
         raw_mel_lens = [x[2].shape[1] for x in batch]
         max_raw_mel_len = max(raw_mel_lens)
         wav_lens = [x[3] for x in batch]
@@ -117,9 +119,9 @@ if __name__ == '__main__':
         'batch_size': 16,
         'mel_vocab_size': 512,
     }
-    cfg = json.load(open('gpt/config.json'))
+    cfg = json.load(open('ttts/gpt/config.json'))
     ds = GptTtsDataset(cfg)
-    dl = torch.utils.data.DataLoader(ds, **cfg['dataloader'], collate_fn=GptTtsCollater())
+    dl = torch.utils.data.DataLoader(ds, **cfg['dataloader'], collate_fn=GptTtsCollater(cfg))
     i = 0
     m = []
     max_text = 0
