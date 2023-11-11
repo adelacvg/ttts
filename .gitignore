@@ -7,3 +7,7 @@ ttts/datasets/*
 */**/*.m4a
 ttts.egg-info/*
 .vscode/*
+damo/*
+.cache/*
+*/**/*.wav
+*/**/*.mp3

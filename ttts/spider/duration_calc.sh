@@ -3,7 +3,7 @@
 total_duration=0
 
 # 遍历文件夹下的所有m4a文件
-for file in dataset/*.m4a; do
+for file in xmly/*.mp3; do
     # 使用FFmpeg获取音频时长信息（以秒为单位）
     duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file")
     
