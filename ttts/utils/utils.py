@@ -19,7 +19,7 @@ def get_paths_with_cache(search_path, cache_path):
     else:
         print("Building cache..")
         path = Path(search_path)
-        out_paths = find_audio_files(path, ['.wav','.m4a'])
+        out_paths = find_audio_files(path, ['.wav','.m4a','.mp3'])
         torch.save(out_paths, cache_path)
     return out_paths
 def find_audio_files(folder_path, suffixes):
