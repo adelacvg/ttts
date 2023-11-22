@@ -1,0 +1,42 @@
+{
+  "train": {
+    "train_steps":50000,
+    "val_freq" : 100,
+    "save_freq" : 1000,
+    "keep_ckpts" : 3,
+    "lr":1e-4,
+    "logs_folder":"ttts/classifier/logs"
+  },
+  "dataset": {
+    "clean":"ttts/classifier/dataset/clean.txt",
+    "noise":"ttts/classifier/dataset/noise.txt",
+    "pad_to_samples":200,
+    "should_squeeze":false
+  },
+  "classifier":{
+    "classes":2, 
+    "spec_dim":100, 
+    "embedding_dim":512, 
+    "depth":5, 
+    "downsample_factor":4,
+    "resnet_blocks":2, 
+    "attn_blocks":4, 
+    "num_attn_heads":4, 
+    "base_channels":32,
+    "dropout":0, 
+    "kernel_size":5, 
+    "distribute_zero_label":false
+  },
+  "dataloader":
+  {
+    "batch_size" : 512,
+    "shuffle": true,
+    "num_workers" : 0,
+    "drop_last":true, 
+    "pin_memory":true
+  },
+  "comment":{
+    "sampler":"sampler", 
+    "collate_fn":"collate_fn"
+  }
+}

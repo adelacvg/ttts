@@ -6,40 +6,24 @@ import torch
 from spleeter.audio.adapter import AudioAdapter
 import torchaudio
 from tqdm import tqdm
+from ttts.prepare.mel_extract import process_mel
 
 # Uses pydub to process a directory of audio files, splitting them into clips at points where it detects a small amount
 # of silence.
 from ttts.utils.utils import find_audio_files
-from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
 
 
+def process_mels(file_paths, max_workers):
+    with torch.multiprocessing.get_context("spawn").Pool(max_workers) as pool:
+        results = list(tqdm(pool.imap(process_mel, file_paths), total=len(file_paths), desc="Mel_extract"))
+    # 过滤掉返回None的结果
+    results = [result for result in results if result is not None]
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--path')
+    parser.add_argument('--path',default='ttts/datasets/cliped_datasets')
     args = parser.parse_args()
     files = find_audio_files(args.path, ['.wav'])
-    mel_extractor = MelSpectrogramFeatures()
-    for e, wav_file in enumerate(tqdm(files)):
-        if e < 0:
-            continue
-        print(f"Processing {wav_file}..")
-        outfile = f'{wav_file}.mel.pth'
-        if os.path.exists(outfile):
-            continue
-
-        try:
-            wave, sample_rate = torchaudio.load(wav_file)
-            if wave.size(0) > 1:  # mix to mono
-                wave = wave[0].unsqueeze[0]
-            if sample_rate!=24000:
-                wave = torchaudio.functional.resample(wave, orig_freq=sample_rate, new_freq=24000)
-        except:
-            print(f"Error with {wav_file}")
-            continue
-
-        mel = mel_extractor(wave)
-        torch.save(mel.cpu().detach(), outfile)
-
+    process_mels(files,8)
 
 if __name__ == '__main__':
     main()

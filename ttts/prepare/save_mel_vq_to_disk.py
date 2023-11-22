@@ -31,7 +31,7 @@ def process_one(paths):
     return 0
 
 if __name__ == '__main__':
-    model_path = '/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-15-44-23/model-36.pt'
+    model_path = '~/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-15-44-23/model-36.pt'
     paths = get_paths_with_cache('ttts/datasets/cliped_datasets','ttts/datasets/wav_clip_path.cache')
     num_threads = 8 
     funcs = []

@@ -10,11 +10,11 @@ input_text = "大家好，今天来点大家想看的东西。"
 pinyin = ' '.join(lazy_pinyin(input_text, style=Style.TONE3, neutral_tone_with_five=True))
 
 MODELS = {
-    'vqvae.pth':'/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-15-44-23/model-36.pt',
-    'autoregressive.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-10-23-16-55-00/model-9.pt',
+    'vqvae.pth':'~/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-15-44-23/model-36.pt',
+    'autoregressive.pth': '~/tortoise_plus_zh/ttts/gpt/logs/2023-10-23-16-55-00/model-9.pt',
     'clvp2.pth': '',
-    'diffusion_decoder.pth': '/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2023-10-27-00-00-28/model-12.pt',
-    'vocoder.pth': '/home/hyc/tortoise_plus_zh/ttts/pretrained_models/pytorch_model.bin',
+    'diffusion_decoder.pth': '~/tortoise_plus_zh/ttts/diffusion/logs/2023-10-27-00-00-28/model-12.pt',
+    'vocoder.pth': '~/tortoise_plus_zh/ttts/pretrained_models/pytorch_model.bin',
     'rlg_auto.pth': '',
     'rlg_diffuser.pth': '',
 }

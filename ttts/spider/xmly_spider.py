@@ -7,6 +7,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from bs4 import BeautifulSoup
 import time
+from tqdm import tqdm
 from webdriver_manager.chrome import ChromeDriverManager
 
 
@@ -55,12 +56,13 @@ def parse_next_page_link(content, page_count):
     return None
 
 def download_album_audio(album_id):
-    out_path = './xmly'
+    out_path = 'ttts/spider/xmly'
     command = f'xmlyfetcher -o {out_path} {album_id} all '
     subprocess.run(command, shell=True)
 
 def download_all_albums(album_links):
-    for link in album_links:
+    for link in tqdm(album_links):
+        print(link)
         album_id = link.split('/')[-1]
         download_album_audio(album_id)
 def save_links_to_file(links, file_path):
@@ -82,5 +84,5 @@ if __name__ == '__main__':
 
     # album_links = get_all_album_links(base_url, num_pages)
     # save_links_to_file(album_links, 'album_links.txt')
-    album_links = read_links_from_file('album_links.txt')
+    album_links = read_links_from_file('ttts/spider/album_links.txt')
     download_all_albums(album_links)

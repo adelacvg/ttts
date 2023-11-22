@@ -43,7 +43,7 @@ class Trainer(object):
         self.train_steps = self.cfg['train']['train_steps']
         self.val_freq = self.cfg['train']['val_freq']
         if self.accelerator.is_main_process:
-            self.ema_model = self._get_target_encoder(self.vqvae).to(self.accelerator.device)
+            # self.ema_model = self._get_target_encoder(self.vqvae).to(self.accelerator.device)
             now = datetime.now()
             self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
             self.logs_folder.mkdir(exist_ok = True, parents=True)
@@ -76,8 +76,8 @@ class Trainer(object):
         self.step = data['step']
         vqvae = accelerator.unwrap_model(self.vqvae)
         vqvae.load_state_dict(state_dict)
-        if self.accelerator.is_local_main_process:
-            self.ema_model.load_state_dict(state_dict)
+        # if self.accelerator.is_local_main_process:
+        #     self.ema_model.load_state_dict(state_dict)
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
@@ -138,5 +138,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-00-25-39/model-14.pt')
+    # trainer.load('~/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-00-25-39/model-14.pt')
     trainer.train()

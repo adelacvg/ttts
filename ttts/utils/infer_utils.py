@@ -1,6 +1,7 @@
 from ttts.vqvae.xtts_dvae import DiscreteVAE
 from ttts.diffusion.model import DiffusionTts
 from ttts.gpt.model import UnifiedVoice
+from ttts.classifier.model import AudioMiniEncoderWithClassifierHead
 import json
 import torch
 
@@ -20,6 +21,10 @@ def load_model(model_name, model_path, config_path, device):
         model = DiffusionTts(**config['diffusion'])
         diffusion = torch.load(model_path, map_location=device)
         model.load_state_dict(diffusion, strict=True)
+    elif model_name == 'classifier':
+        model = AudioMiniEncoderWithClassifierHead(**config['classifier'])
+        classifier = torch.load(model_path, map_location=device)
+        model.load_state_dict(classifier, strict=True)
     # elif model_name=='clvp':
 
     
