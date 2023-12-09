@@ -20,7 +20,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "env": {"CUDA_VISIBLE_DEVICES":"7"}
+            "env": {"CUDA_VISIBLE_DEVICES":"1"}
         }
     ]
 }

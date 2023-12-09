@@ -5,13 +5,11 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from ttts.unet1d.embeddings import TextTimeEmbedding
 from ttts.unet1d.unet_1d_condition import UNet1DConditionModel
-from utils import plot_spectrogram_to_numpy
 from vocos import Vocos
 from torch import expm1, nn
-import torchaudio
-import commons as commons
+import ttts.diffusion.commons as commons
 from accelerate import Accelerator
-from operations import OPERATIONS_ENCODER
+from ttts.diffusion.operations import OPERATIONS_ENCODER
 from accelerate import DistributedDataParallelKwargs
 import math
 from multiprocessing import cpu_count
@@ -29,8 +27,6 @@ from torch.utils.data import Dataset, DataLoader
 
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
-
-import utils
 
 from tqdm.auto import tqdm
 TACOTRON_MEL_MAX = 5.5451774444795624753378569716654

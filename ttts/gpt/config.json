@@ -1,6 +1,6 @@
 {
   "train": {
-    "train_steps":10000,
+    "train_steps":30000,
     "val_freq" : 100,
     "save_freq" : 1000,
     "keep_ckpts" : 3,
@@ -11,7 +11,7 @@
     "accumulate_num":8
   },
   "dataset": {
-    "path":"ttts/datasets/all_data.jsonl"
+    "path":"ttts/datasets/filtered_paths.jsonl"
   },
   "gpt":{
     "model_dim":1024,
@@ -27,7 +27,7 @@
   },
   "dataloader":
   {
-    "batch_size" : 16,
+    "batch_size" : 8,
     "shuffle": false,
     "num_workers" : 64,
     "drop_last":true, 

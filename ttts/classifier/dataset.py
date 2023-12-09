@@ -13,6 +13,7 @@ from tqdm import tqdm
 class PreprocessedMelDataset(torch.utils.data.Dataset):
 
     def __init__(self, opt):
+        super().__init__()
         clean = opt['dataset']['clean']
         noise = opt['dataset']['noise']
         self.labels = []

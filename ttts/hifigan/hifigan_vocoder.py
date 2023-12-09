@@ -4,6 +4,49 @@ from torch import nn
 from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, weight_norm
+from typing import Any, Callable, Dict, Union
+import os
+
+import fsspec
+
+LRELU_SLOPE = 0.1
+
+
+def load_fsspec(
+    path: str,
+    map_location: Union[str, Callable, torch.device, Dict[Union[str, torch.device], Union[str, torch.device]]] = None,
+    cache: bool = True,
+    **kwargs,
+) -> Any:
+    """Like torch.load but can load from other locations (e.g. s3:// , gs://).
+
+    Args:
+        path: Any path or url supported by fsspec.
+        map_location: torch.device or str.
+        cache: If True, cache a remote file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to True.
+        **kwargs: Keyword arguments forwarded to torch.load.
+
+    Returns:
+        Object stored in path.
+    """
+    is_local = os.path.isdir(path) or os.path.isfile(path)
+    if cache and not is_local:
+        with fsspec.open(
+            f"filecache::{path}",
+            mode="rb",
+        ) as f:
+            return torch.load(f, map_location=map_location, **kwargs)
+    else:
+        with fsspec.open(path, "rb") as f:
+            return torch.load(f, map_location=map_location, **kwargs)
+
+import torch
+import torchaudio
+from torch import nn
+from torch.nn import Conv1d, ConvTranspose1d
+from torch.nn import functional as F
+from torch.nn.utils.parametrizations import weight_norm
+from torch.nn.utils.parametrize import remove_parametrizations
 
 LRELU_SLOPE = 0.1
 
@@ -118,9 +161,9 @@ class ResBlock1(torch.nn.Module):
 
     def remove_weight_norm(self):
         for l in self.convs1:
-            remove_weight_norm(l)
+            remove_parametrizations(l, "weight")
         for l in self.convs2:
-            remove_weight_norm(l)
+            remove_parametrizations(l, "weight")
 
 
 class ResBlock2(torch.nn.Module):
@@ -174,7 +217,7 @@ class ResBlock2(torch.nn.Module):
 
     def remove_weight_norm(self):
         for l in self.convs:
-            remove_weight_norm(l)
+            remove_parametrizations(l, "weight")
 
 
 class HifiganGenerator(torch.nn.Module):
@@ -249,10 +292,10 @@ class HifiganGenerator(torch.nn.Module):
             self.cond_layer = nn.Conv1d(cond_channels, upsample_initial_channel, 1)
 
         if not conv_pre_weight_norm:
-            remove_weight_norm(self.conv_pre)
+            remove_parametrizations(self.conv_pre, "weight")
 
         if not conv_post_weight_norm:
-            remove_weight_norm(self.conv_post)
+            remove_parametrizations(self.conv_post, "weight")
 
         if self.cond_in_each_up_layer:
             self.conds = nn.ModuleList()
@@ -315,11 +358,11 @@ class HifiganGenerator(torch.nn.Module):
     def remove_weight_norm(self):
         print("Removing weight norm...")
         for l in self.ups:
-            remove_weight_norm(l)
+            remove_parametrizations(l, "weight")
         for l in self.resblocks:
             l.remove_weight_norm()
-        remove_weight_norm(self.conv_pre)
-        remove_weight_norm(self.conv_post)
+        remove_parametrizations(self.conv_pre, "weight")
+        remove_parametrizations(self.conv_post, "weight")
 
     def load_checkpoint(
         self, config, checkpoint_path, eval=False, cache=False
@@ -683,7 +726,7 @@ class HifiDecoder(torch.nn.Module):
         """
 
         z = torch.nn.functional.interpolate(
-            latents.transpose(1, 2),
+            latents,
             scale_factor=[self.ar_mel_length_compression / self.output_hop_length],
             mode="linear",
         ).squeeze(1)

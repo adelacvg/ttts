@@ -34,25 +34,28 @@ class GptTtsDataset(torch.utils.data.Dataset):
         self.audiopaths_and_text = read_jsonl(self.jsonl_path)
 
     def __getitem__(self, index):
-        # Fetch text and add start/stop tokens.
-        audiopath_and_text = self.audiopaths_and_text[index]
-        audiopath, text = audiopath_and_text['path'], audiopath_and_text['text']
-        text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
-        text = self.tok.encode(text)
-        text = LongTensor(text)
+        try:
+            # Fetch text and add start/stop tokens.
+            audiopath_and_text = self.audiopaths_and_text[index]
+            audiopath, text = audiopath_and_text['path'], audiopath_and_text['text']
+            text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
+            text = self.tok.encode(text)
+            text = LongTensor(text)
 
-        # Fetch quantized MELs
-        quant_path = audiopath + '.melvq.pth'
-        qmel = LongTensor(torch.load(quant_path)[0])
+            # Fetch quantized MELs
+            quant_path = audiopath + '.melvq.pth'
+            qmel = LongTensor(torch.load(quant_path)[0])
 
-        mel_path = audiopath + '.mel.pth'
-        mel = torch.load(mel_path)[0]
-        wav_length = mel.shape[1]*256
-        split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
-        if random.random()>0.5:
-            mel = mel[:,:split]
-        else:
-            mel = mel[:,split:]
+            mel_path = audiopath + '.mel.pth'
+            mel = torch.load(mel_path)[0]
+            wav_length = mel.shape[1]*256
+            split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
+            if random.random()>0.5:
+                mel = mel[:,:split]
+            else:
+                mel = mel[:,split:]
+        except:
+            return None
 
         #load wav
         # wav,sr = torchaudio.load(audiopath)

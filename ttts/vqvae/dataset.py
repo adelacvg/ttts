@@ -10,23 +10,30 @@ import torchaudio
 import torchvision
 from tqdm import tqdm
 
+from ttts.classifier.infer import read_jsonl
+
 class PreprocessedMelDataset(torch.utils.data.Dataset):
 
     def __init__(self, opt):
-        path = opt['dataset']['path']
-        cache_path = opt['dataset']['cache_path']  # Will fail when multiple paths specified, must be specified in this case.
-        if os.path.exists(cache_path):
-            self.paths = torch.load(cache_path)
-        else:
-            print("Building cache..")
-            path = Path(path)
-            self.paths = [str(p) for p in path.rglob("*.mel.pth")]
-            torch.save(self.paths, cache_path)
+        # cache_path = opt['dataset']['cache_path']  # Will fail when multiple paths specified, must be specified in this case.
+        # if os.path.exists(cache_path):
+        #     self.paths = torch.load(cache_path)
+        # else:
+        #     print("Building cache..")
+        #     path = Path(path)
+        #     self.paths = [str(p) for p in path.rglob("*.mel.pth")]
+        #     torch.save(self.paths, cache_path)
+        paths = read_jsonl(opt['dataset']['path'])
+        pre = os.path.expanduser(opt['dataset']['pre'])
+        self.paths = [os.path.join(pre,d['path'])+'.mel.pth' for d in paths]
         self.pad_to = opt['dataset']['pad_to_samples']
         self.squeeze = opt['dataset']['should_squeeze']
 
     def __getitem__(self, index):
-        mel = torch.load(self.paths[index])
+        try:
+            mel = torch.load(self.paths[index])
+        except:
+            mel = torch.zeros(1,100,self.pad_to)
         if mel.shape[-1] >= self.pad_to:
             start = torch.randint(0, mel.shape[-1] - self.pad_to+1, (1,))
             mel = mel[:, :, start:start+self.pad_to]

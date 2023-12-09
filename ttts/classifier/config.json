@@ -10,7 +10,7 @@
   "dataset": {
     "clean":"ttts/classifier/dataset/clean.txt",
     "noise":"ttts/classifier/dataset/noise.txt",
-    "pad_to_samples":200,
+    "pad_to_samples":700,
     "should_squeeze":false
   },
   "classifier":{
@@ -29,9 +29,9 @@
   },
   "dataloader":
   {
-    "batch_size" : 512,
+    "batch_size" : 128,
     "shuffle": true,
-    "num_workers" : 0,
+    "num_workers" : 32,
     "drop_last":true, 
     "pin_memory":true
   },
