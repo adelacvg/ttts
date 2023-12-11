@@ -45,12 +45,14 @@ class DiffusionDataset(torch.utils.data.Dataset):
         text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
         text = self.tok.encode(text)
         text_tokens = LongTensor(text)
+        try:
+            mel_path = audiopath + '.mel.pth'
+            mel_raw = torch.load(mel_path)[0]
 
-        mel_path = audiopath + '.mel.pth'
-        mel_raw = torch.load(mel_path)[0]
-
-        quant_path = audiopath + '.melvq.pth'
-        mel_codes = LongTensor(torch.load(quant_path)[0])
+            quant_path = audiopath + '.melvq.pth'
+            mel_codes = LongTensor(torch.load(quant_path)[0])
+        except:
+            return None
 
         split = random.randint(int(mel_raw.shape[1]//3), int(mel_raw.shape[1]//3*2))
         if random.random()>0.5:

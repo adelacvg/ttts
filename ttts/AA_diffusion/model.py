@@ -236,4 +236,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
+    trainer.load('ttts/AA_diffusion/logs/2023-12-10-13-15-44/model-1.pt')
     trainer.train()
