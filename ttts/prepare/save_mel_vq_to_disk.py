@@ -1,3 +1,4 @@
+import argparse
 import functools
 import multiprocessing
 import os
@@ -17,9 +18,13 @@ def extract_vq(file_paths, max_workers):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--json_path',default='ttts/datasets/filtered_paths.jsonl')
+    args = parser.parse_args()
     # model_path = '/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-24-01-21-25/model-30.pt'
     # paths = get_paths_with_cache('ttts/datasets/cliped_datasets','ttts/datasets/wav_clip_path.cache')
-    paths = read_jsonl('ttts/datasets/filtered_paths.jsonl')
+    # paths = read_jsonl('ttts/datasets/filtered_paths.jsonl')
+    paths = read_jsonl(args.json_path)
     paths = [os.path.join('/home/hyc/tortoise_plus_zh',path['path']) for path in paths]
     num_threads = 8
     extract_vq(paths, num_threads)

@@ -2,8 +2,9 @@ from pydub.silence import split_on_silence
 from pydub import  AudioSegment
 from pydub.exceptions import CouldntDecodeError
 import os
-out_path = 'ttts/datasets/cliped_datasets'
-def process_file_vad(audio_path):
+# out_path = 'ttts/datasets/cliped_datasets'
+def process_file_vad(paths):
+    audio_path,out_path = paths
     min_duration=4
     max_duration=20
     out_prefix = os.path.splitext(os.path.basename(audio_path))[0]

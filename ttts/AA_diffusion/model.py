@@ -10,10 +10,10 @@ from ldm.util import instantiate_from_config
 from ttts.utils.utils import clean_checkpoints, plot_spectrogram_to_numpy, summarize
 from accelerate import Accelerator
 from vocos import Vocos
+from ttts.AA_diffusion.cldm.cldm import denormalize_tacotron_mel
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from datetime import datetime
-from ttts.diffusion.diffusion_util import denormalize_tacotron_mel
 from ttts.utils.infer_utils import load_model
 # import utils
 from torch.utils.tensorboard import SummaryWriter
@@ -159,6 +159,8 @@ class Trainer(object):
                     unused_params.extend(list(model.cond_stage_model.visual.proj))
                     unused_params.extend(list(model.refer_model.output_blocks.parameters()))
                     unused_params.extend(list(model.refer_model.output_blocks.parameters()))
+                    unused_params.extend(list(model.unconditioned_embedding))
+                    unused_params.extend(list(model.unconditioned_cat_embedding))
                     extraneous_addition = 0
                     for p in unused_params:
                         extraneous_addition = extraneous_addition + p.mean()
@@ -203,7 +205,7 @@ class Trainer(object):
                             model.eval()
                             milestone = self.step // self.save_and_sample_every
                             log = model.log_images(data_)
-                            mel = log['samples_cfg'].detach().cpu()
+                            mel = log['samples'].detach().cpu()
                             mel = denormalize_tacotron_mel(mel)
                             model.train()
                         gen = self.vocos.decode(mel)
@@ -236,5 +238,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('ttts/AA_diffusion/logs/2023-12-10-13-15-44/model-1.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/AA_diffusion/logs/2023-12-14-19-28-08/model-47.pt')
     trainer.train()

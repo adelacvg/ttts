@@ -4,6 +4,7 @@ This project is for training tortoise-tts like model.
 Most of the codes are from [tortoise tts](https://github.com/neonbjb/tortoise-tts) and [xtts](https://github.com/coqui-ai/TTS/tree/dev/TTS/tts/layers/xtts).
 
 Now only support mandarin.
+Pretrained gpt and vae model can be found in [here](https://huggingface.co/adelacvg/TTTS/tree/main), you can use `api.ipynb` to get some intuition of these two models.
 
 ```
 pip install . -e

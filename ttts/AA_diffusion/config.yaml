@@ -1,7 +1,7 @@
 dataloader: 
-  batch_size : 64
-  shuffle: false
-  num_workers : 8
+  batch_size : 32
+  shuffle: true
+  num_workers : 32
   drop_last : true
   pin_memory : true
 model:
@@ -139,9 +139,4 @@ train:
   all_in_mem : false
 dataset:
   path : "ttts/datasets/filtered_paths.jsonl"
-  gpt_path : "~/tortoise_plus_zh/ttts/gpt/logs/2023-11-05-21-44-13/model-9.pt"
-data:
-  training_files : "../vc_dataset_processed_processed"
-  val_files : "val_dataset_processed"
-  sampling_rate : 24000
-  hop_length : 256
+  gpt_path : "~/tortoise_plus_zh/ttts/gpt/logs/2023-11-26-22-56-38/model-29.pt"

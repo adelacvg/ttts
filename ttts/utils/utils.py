@@ -12,15 +12,16 @@ import torchaudio
 from ttts.utils.xtransformers import ContinuousTransformerWrapper, RelativePositionBias
 import glob
 
-def get_paths_with_cache(search_path, cache_path):
+def get_paths_with_cache(search_path, cache_path=None):
     out_paths=None
-    if os.path.exists(cache_path):
+    if cache_path!=None and os.path.exists(cache_path):
         out_paths = torch.load(cache_path)
     else:
-        print("Building cache..")
         path = Path(search_path)
         out_paths = find_audio_files(path, ['.wav','.m4a','.mp3'])
-        torch.save(out_paths, cache_path)
+        if cache_path is not None:
+            print("Building cache..")
+            torch.save(out_paths, cache_path)
     return out_paths
 def find_audio_files(folder_path, suffixes):
     files = []
