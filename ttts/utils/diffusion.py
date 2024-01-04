@@ -1,4 +1,5 @@
 import enum
+from functools import partial
 import math
 
 import numpy as np
@@ -304,7 +305,6 @@ class GaussianDiffusion:
         if model_kwargs is None:
             model_kwargs = {}
 
-        assert self.model_var_type == ModelVarType.LEARNED_RANGE
         assert self.model_mean_type == ModelMeanType.EPSILON
         assert denoised_fn is None
         assert clip_denoised is True
@@ -331,7 +331,6 @@ class GaussianDiffusion:
                 model_log_variance = frac * max_log + (1 - frac) * min_log
                 model_variance = th.exp(model_log_variance)
         else:
-            assert False
             model_variance, model_log_variance = {
                 # for fixedlarge, we set the initial (log-)variance like so
                 # to get a better decoder log likelihood.

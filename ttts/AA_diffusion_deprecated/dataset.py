@@ -8,12 +8,17 @@ from torch import LongTensor
 from tqdm import tqdm
 import torchaudio
 from pypinyin import Style, lazy_pinyin
-
+import math
 from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 from ttts.utils.infer_utils import load_model
 import json
 import os
 
+def padding_to_8(x):
+    l = x.shape[-1]
+    l = (math.floor(l / 8) + 1) * 8
+    x = torch.nn.functional.pad(x, (0, l-x.shape[-1]))
+    return x
 def read_jsonl(path):
     with open(path, 'r') as f:
         json_str = f.read()
@@ -28,11 +33,15 @@ def write_jsonl(path, all_paths):
             json.dump(item, file, ensure_ascii=False)
             file.write('\n')
 
+def padding_to_8(x):
+    l = x.shape[-1]
+    l = (math.floor(l / 8) + 1) * 8
+    x = torch.nn.functional.pad(x, (0, l-x.shape[-1]))
+    return x
 class DiffusionDataset(torch.utils.data.Dataset):
     def __init__(self, opt):
         self.jsonl_path = opt['dataset']['path']
         self.audiopaths_and_text = read_jsonl(self.jsonl_path)
-        # self.gpt = load_model('gpt',opt['dataset']['gpt_path'],'ttts/gpt/config.json','cuda')
         self.tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
     def __getitem__(self, index):
         # Fetch text and add start/stop tokens.
@@ -41,7 +50,6 @@ class DiffusionDataset(torch.utils.data.Dataset):
         text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
         text = self.tok.encode(text)
         text_tokens = LongTensor(text)
-
         try:
             mel_path = audiopath + '.mel.pth'
             mel_raw = torch.load(mel_path)[0]
@@ -51,19 +59,31 @@ class DiffusionDataset(torch.utils.data.Dataset):
         except:
             return None
 
-        split = random.randint(int(mel_raw.shape[1]//3), int(mel_raw.shape[1]//3*2))
-        if random.random()>0.5:
-            mel_refer = mel_raw[:,split:]
-        else:
-            mel_refer = mel_raw[:,:split]
-        if mel_refer.shape[1]>200:
-            mel_refer = mel_refer[:,:200]
+        # Define the number of frames for the random crop (adjust as needed)
+        crop_frames = random.randint(int(mel_raw.shape[1] // 4), int(mel_raw.shape[1] // 4 * 3))
+
+        # Ensure the crop doesn't exceed the length of the original audio
+        max_start_frame = mel_raw.shape[1] - crop_frames
+        start_frame = random.randint(0, max_start_frame)
+
+        # Perform the random crop
+        mel_refer = mel_raw[:, start_frame: start_frame + crop_frames]
+        mel_refer = padding_to_8(mel_refer)
+        # split = random.randint(int(mel_raw.shape[1]//3), int(mel_raw.shape[1]//3*2))
+        # if random.random()>0.5:
+        #     mel_refer = mel_raw[:,split:]
+        # else:
+        #     mel_refer = mel_raw[:,:split]
+        # if mel_refer.shape[1]>200:
+        #     mel_refer = mel_refer[:,:200]
         #text_token mel_codes 
 
         if mel_raw.shape[1]>400:
             mel_raw = mel_raw[:,:400]
             mel_codes = mel_codes[:100]
-
+        if mel_codes.shape[-1]%2==1:
+            mel_codes = mel_codes[:-1]
+            mel_raw = mel_raw[:,:-4]
         return text_tokens, mel_codes, mel_raw, mel_refer
 
     def __len__(self):

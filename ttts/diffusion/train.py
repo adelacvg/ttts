@@ -1,11 +1,13 @@
+from omegaconf import OmegaConf
 import torchaudio
-from ttts.diffusion.diffusion_util import denormalize_tacotron_mel, normalize_tacotron_mel
+from ttts.diffusion.aa_model import AA_diffusion, denormalize_tacotron_mel, normalize_tacotron_mel
 from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 from ttts.utils.diffusion import SpacedDiffusion, space_timesteps, get_named_beta_schedule
 import torch
 import copy
 from datetime import datetime
 import json
+from vocos import Vocos
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -38,11 +40,13 @@ def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_la
     with torch.no_grad():
         output_seq_len = latents.shape[2] * 4 # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
         output_shape = (latents.shape[0], 100, output_seq_len)
-        precomputed_embeddings = diffusion_model.timestep_independent(latents, conditioning_latents, output_seq_len, False)
 
         noise = torch.randn(output_shape, device=latents.device) * temperature
         mel = diffuser.p_sample_loop(diffusion_model, output_shape, noise=noise,
-                                    model_kwargs={'precomputed_aligned_embeddings': precomputed_embeddings},
+                                    model_kwargs= {
+                                    "hint": latents,
+                                    "refer": conditioning_latents
+                                    },
                                     progress=verbose)
         return denormalize_tacotron_mel(mel)[:,:,:output_seq_len]
 
@@ -69,16 +73,19 @@ def warmup(step):
         return float(step/1000)
     else:
         return 1
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 class Trainer(object):
-    def __init__(self, cfg_path='ttts/diffusion/config.json'):
+    def __init__(self, cfg_path='ttts/diffusion/config.yaml'):
         # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         # self.accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
         self.accelerator = Accelerator()
-        self.cfg = json.load(open(cfg_path))
-        trained_diffusion_steps = 4000
-        self.trained_diffusion_steps = 4000
-        desired_diffusion_steps = 200
-        self.desired_diffusion_steps = 200
+        self.cfg = OmegaConf.load(cfg_path)
+        # self.cfg = json.load(open(cfg_path))
+        trained_diffusion_steps = 1000
+        self.trained_diffusion_steps = 1000
+        desired_diffusion_steps = 1000
+        self.desired_diffusion_steps = 1000
         cond_free_k = 2.
 
         self.gpt = load_model('gpt',self.cfg['dataset']['gpt_path'],'ttts/gpt/config.json','cuda')
@@ -87,12 +94,15 @@ class Trainer(object):
         self.diffuser= SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [desired_diffusion_steps]), model_mean_type='epsilon',
                            model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
                            conditioning_free=False, conditioning_free_k=cond_free_k)
-        self.infer_diffuser = SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [30]), model_mean_type='epsilon',
+        self.infer_diffuser = SpacedDiffusion(use_timesteps=space_timesteps(trained_diffusion_steps, [50]), model_mean_type='epsilon',
                            model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
-                           conditioning_free=True, conditioning_free_k=cond_free_k,sampler='dpm++2m')
-        self.diffusion = DiffusionTts(**self.cfg['diffusion'])
+                           conditioning_free=True, conditioning_free_k=cond_free_k, sampler='dpm++2m')
+        # self.diffusion = DiffusionTts(**self.cfg['diffusion'])
+        self.diffusion = AA_diffusion(self.cfg)
+        print("model params:", count_parameters(self.diffusion))
         self.dataset = DiffusionDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'], collate_fn=DiffusionCollater())
+        self.vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
         self.train_steps = self.cfg['train']['train_steps']
         self.val_freq = self.cfg['train']['val_freq']
         if self.accelerator.is_main_process:
@@ -142,6 +152,7 @@ class Trainer(object):
         with tqdm(initial = self.step, total = self.train_steps, disable = not accelerator.is_main_process) as pbar:
             while self.step < self.train_steps:
                 total_loss = 0.
+                # with torch.autograd.detect_anomaly():
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dataloader)
                     if data==None:
@@ -164,10 +175,20 @@ class Trainer(object):
                             x_start = x_start,
                             t = t,
                             model_kwargs = {
-                                "aligned_conditioning": aligned_conditioning,
-                                "conditioning_latent": conditioning_latent
+                                "hint": aligned_conditioning,
+                                "refer": conditioning_latent
                             },
                             )["loss"].mean()
+                        unused_params =[]
+                        model = self.accelerator.unwrap_model(self.diffusion)
+                        unused_params.extend(list(model.refer_model.blocks.parameters()))
+                        unused_params.extend(list(model.refer_model.out.parameters()))
+                        unused_params.extend(list(model.refer_model.hint_converter.parameters()))
+                        unused_params.extend(list(model.refer_enc.visual.proj))
+                        extraneous_addition = 0
+                        for p in unused_params:
+                            extraneous_addition = extraneous_addition + p.mean()
+                        loss = loss + 0*extraneous_addition
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -206,12 +227,21 @@ class Trainer(object):
                         diffusion = self.accelerator.unwrap_model(self.diffusion)
                         mel = do_spectrogram_diffusion(diffusion, self.infer_diffuser,latent,refer_padded,temperature=0.8)
                         mel = mel.detach().cpu()
+                    
+                    milestone = self.step // self.cfg['train']['save_freq'] 
+                    gen = self.vocos.decode(mel)
+                    torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), gen, 24000)
+                    audio_dict = {}
+                    audio_dict.update({
+                            f"gen/audio": gen,
+                        })
                     image_dict = {
                         f"gt/mel": plot_spectrogram_to_numpy(mel_padded[0, :, :].detach().unsqueeze(-1).cpu()),
                         f"gen/mel": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
                     summarize(
                         writer=writer_eval,
+                        audios=audio_dict,
                         global_step=self.step,
                         images=image_dict,
                     )
@@ -228,5 +258,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('~/tortoise_plus_zh/ttts/diffusion/logs/2023-11-06-11-14-20/model-27.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2023-11-06-18-18-28/model-79.pt')
     trainer.train()

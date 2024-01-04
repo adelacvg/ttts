@@ -1,0 +1,75 @@
+train: 
+  train_steps: 700000
+  val_freq: 100
+  save_freq: 1000
+  keep_ckpts: 3
+  lr: 1e-4
+  logs_folder: 'ttts/diffusion/logs'
+  accumulate_num: 1
+  unconditioned_percentage: 0.1
+  timesteps: 1000
+dataset:
+  path: /home/hyc/tortoise_plus_zh/ttts/datasets/filtered_paths.jsonl
+  gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-12-24-14-22-14/model-70.pt
+dataloader:
+  batch_size : 16
+  shuffle: false
+  num_workers : 64
+  drop_last: true 
+  pin_memory: true
+
+diffusion:
+  model_channels: 512
+  num_layers: 10 
+  in_channels: 100 
+  out_channels: 200
+  in_latent_channels: 1024 
+  in_tokens: 8193 
+  dropout: 0 
+  use_fp16: false 
+  num_heads: 16
+  layer_drop: 0.2 
+  unconditioned_percentage: 0.15
+
+base_diffusion:
+  in_channels: 100
+  out_channels: 200
+  model_channels: 512
+  attention_resolutions: [ 4, 2, 1 ]
+  num_res_blocks: 2
+  channel_mult: [ 1, 1 ]
+  num_heads: 8
+  use_spatial_transformer: True
+  transformer_depth: 1
+  context_dim: 512
+  use_checkpoint: True
+  dims: 1
+  legacy: False
+refer_diffusion:
+  in_channels: 100
+  out_channels: 200
+  model_channels: 512
+  attention_resolutions: [ 4, 2, 1 ]
+  num_res_blocks: 2
+  channel_mult: [ 1, 1]
+  num_heads: 8
+  use_spatial_transformer: True
+  transformer_depth: 1
+  context_dim: 512
+  use_checkpoint: True
+  legacy: False
+clip:
+  embed_dim: 512
+  vision_cfg: 
+    layers: 6
+    width: 512
+    head_width: 64
+    mlp_ratio: 4.0
+    patch_dropout: 0.4
+    attentional_pool: False
+    patch_size: 32
+    image_size: 1000
+    in_channels: 100
+    pool_type: 'tok'
+    pos_embed_type: 'learnable'
+    final_ln_after_pool: false
