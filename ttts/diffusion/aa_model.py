@@ -1,13 +1,13 @@
-from ldm.modules.diffusionmodules.util import (
+from ttts.diffusion.ldm.modules.diffusionmodules.util import (
     conv_nd,
     linear,
     normalization,
     zero_module,
     timestep_embedding,
 )
-from ldm.modules.attention import SpatialTransformer
-from ldm.modules.diffusionmodules.openaimodel import TimestepEmbedSequential, ResBlock, Downsample, AttentionBlock, Upsample, convert_module_to_f16, convert_module_to_f32
-from ldm.util import exists
+from ttts.diffusion.ldm.modules.attention import SpatialTransformer
+from ttts.diffusion.ldm.modules.diffusionmodules.openaimodel import TimestepEmbedSequential, ResBlock, Downsample, AttentionBlock, Upsample, convert_module_to_f16, convert_module_to_f32
+from ttts.diffusion.ldm.util import exists
 import torch as th
 from einops import rearrange, repeat
 import torch

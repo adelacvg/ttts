@@ -1,5 +1,5 @@
 train: 
-  train_steps: 700000
+  train_steps: 1000000
   val_freq: 100
   save_freq: 1000
   keep_ckpts: 3
@@ -12,7 +12,7 @@ dataset:
   path: /home/hyc/tortoise_plus_zh/ttts/datasets/filtered_paths.jsonl
   gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-12-24-14-22-14/model-70.pt
 dataloader:
-  batch_size : 16
+  batch_size : 64
   shuffle: false
   num_workers : 64
   drop_last: true 
