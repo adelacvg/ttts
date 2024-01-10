@@ -6,7 +6,7 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ldm.modules.diffusionmodules.util import (
+from ttts.diffusion.ldm.modules.diffusionmodules.util import (
     checkpoint,
     conv_nd,
     linear,
@@ -15,8 +15,8 @@ from ldm.modules.diffusionmodules.util import (
     normalization,
     timestep_embedding,
 )
-from ldm.modules.attention import SpatialTransformer
-from ldm.util import exists
+from ttts.diffusion.ldm.modules.attention import SpatialTransformer
+from ttts.diffusion.ldm.util import exists
 
 
 # dummy replace
