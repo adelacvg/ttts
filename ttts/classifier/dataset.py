@@ -35,7 +35,7 @@ class PreprocessedMelDataset(torch.utils.data.Dataset):
                     self.labels += [1]
                 else:
                     self.paths += [str(p) for p in Path(line).rglob("*.mel.pth")]
-                    self.labels += [0 for _ in range(len(self.paths) - len(self.labels))]
+                    self.labels += [1 for _ in range(len(self.paths) - len(self.labels))]
         
         self.pad_to = opt['dataset']['pad_to_samples']
         self.squeeze = opt['dataset']['should_squeeze']
