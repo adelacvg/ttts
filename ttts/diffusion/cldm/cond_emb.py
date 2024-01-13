@@ -111,10 +111,10 @@ def _build_vision_tower(
     # else:
     vision_heads = vision_cfg.width // vision_cfg.head_width
     norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
-    if vision_cfg.norm_kwargs:
-        norm_layer = partial(norm_layer, **vision_cfg.norm_kwargs)
-    if vision_cfg.act_kwargs is not None:
-        act_layer = partial(act_layer, **vision_cfg.act_kwargs)
+    # if vision_cfg.norm_kwargs:
+    #     norm_layer = partial(norm_layer, **vision_cfg.norm_kwargs)
+    # if vision_cfg.act_kwargs is not None:
+    #     act_layer = partial(act_layer, **vision_cfg.act_kwargs)
 
     visual = VisionTransformer(
         image_size=vision_cfg.image_size,
