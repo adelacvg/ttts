@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.utils.model_parallel_utils import get_device_map, assert_device_map
+from ttts.gpt.perceiver import PerceiverResampler
 from ttts.utils.utils import AttentionBlock
 from ttts.utils.typical_sampling import TypicalLogitsWarper
 
@@ -294,7 +295,7 @@ class UnifiedVoice(nn.Module):
                  mel_length_compression=1024, number_text_tokens=256,
                  start_text_token=None, number_mel_codes=8194, start_mel_token=8192,
                  stop_mel_token=8193, train_solo_embeddings=False, use_mel_codes_as_input=True,
-                 checkpointing=True, types=1):
+                 checkpointing=True, types=1, use_perceiver=False):
         """
         Args:
             layers: Number of layers in transformer stack.
@@ -329,7 +330,11 @@ class UnifiedVoice(nn.Module):
         self.model_dim = model_dim
         self.max_conditioning_inputs = max_conditioning_inputs
         self.mel_length_compression = mel_length_compression
-        self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads)
+        if use_perceiver==True:
+            self.perceiver_encoder = PerceiverResampler(model_dim, dim_context=100)
+        else:
+            self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads)
+        self.use_perceiver = use_perceiver
         self.text_embedding = nn.Embedding(self.number_text_tokens*types+1, model_dim)
         if use_mel_codes_as_input:
             self.mel_embedding = nn.Embedding(self.number_mel_codes, model_dim)
@@ -441,13 +446,18 @@ class UnifiedVoice(nn.Module):
             return first_logits
 
     def get_conditioning(self, speech_conditioning_input):
-        speech_conditioning_input = speech_conditioning_input.unsqueeze(1) if len(
+        if self.use_perceiver is not True:
+            speech_conditioning_input = speech_conditioning_input.unsqueeze(1) if len(
             speech_conditioning_input.shape) == 3 else speech_conditioning_input
         conds = []
         for j in range(speech_conditioning_input.shape[1]):
-            conds.append(self.conditioning_encoder(speech_conditioning_input[:, j]))
-        conds = torch.stack(conds, dim=1)
-        conds = conds.mean(dim=1)
+            if self.use_perceiver == True:
+                conds = self.perceiver_encoder(speech_conditioning_input.transpose(1,2))
+            else:
+                conds.append(self.conditioning_encoder(speech_conditioning_input[:, j]))
+        if self.use_perceiver is not True:
+            conds = torch.stack(conds, dim=1)
+            conds = conds.mean(dim=1)
         return conds
 
     def forward(self, speech_conditioning_latent, text_inputs, text_lengths, mel_codes, wav_lengths, types=None, text_first=True, raw_mels=None, return_attentions=False,
@@ -486,7 +496,10 @@ class UnifiedVoice(nn.Module):
         text_inputs = F.pad(text_inputs, (0,1), value=self.stop_text_token)
         mel_codes = F.pad(mel_codes, (0,1), value=self.stop_mel_token)
 
-        conds = speech_conditioning_latent.unsqueeze(1)
+        if self.use_perceiver is not True:
+            conds = speech_conditioning_latent.unsqueeze(1)
+        else:
+            conds = speech_conditioning_latent
         text_inputs, text_targets = self.build_aligned_inputs_and_targets(text_inputs, self.start_text_token, self.stop_text_token)
         text_emb = self.text_embedding(text_inputs) + self.text_pos_embedding(text_inputs)
         mel_codes, mel_targets = self.build_aligned_inputs_and_targets(mel_codes, self.start_mel_token, self.stop_mel_token)
@@ -520,7 +533,10 @@ class UnifiedVoice(nn.Module):
         text_emb = self.text_embedding(text_inputs) + self.text_pos_embedding(text_inputs)
 
         speech_conditioning_latent = self.get_conditioning(speech_conditioning_latent)
-        conds = speech_conditioning_latent.unsqueeze(1)
+        if self.use_perceiver is not True:
+            conds = speech_conditioning_latent.unsqueeze(1)
+        else:
+            conds = speech_conditioning_latent
         emb = torch.cat([conds, text_emb], dim=1)
         self.inference_model.store_mel_emb(emb)
 
