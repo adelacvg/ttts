@@ -9,6 +9,7 @@ The distinguishing factor lies in certain training details and the diffusion mod
 Now only support mandarin.
 Pretrained gpt and vae model can be found in [here](https://huggingface.co/adelacvg/TTTS/tree/main), you can use `api.ipynb` to get some intuition of these two models.
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/adelacvg/ttts/blob/master/demo.ipynb)
 ```
 pip install -e .
 ```
