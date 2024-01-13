@@ -12,3 +12,4 @@ damo/*
 */**/*.wav
 */**/*.mp3
 ast_indexer
+!3.wav

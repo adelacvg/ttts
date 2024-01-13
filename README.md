@@ -10,7 +10,7 @@ Now only support mandarin.
 Pretrained gpt and vae model can be found in [here](https://huggingface.co/adelacvg/TTTS/tree/main), you can use `api.ipynb` to get some intuition of these two models.
 
 ```
-pip install . -e
+pip install -e .
 ```
 Training the model including many steps.
 
