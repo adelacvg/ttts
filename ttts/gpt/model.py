@@ -32,13 +32,13 @@ class ResBlock(nn.Module):
     def forward(self, x):
         return F.relu(self.net(x) + x)
 
-
 class GPT2InferenceModel(GPT2PreTrainedModel):
     def __init__(self, config, gpt, text_pos_emb, embeddings, norm, linear, kv_cache=False):
         super().__init__(config)
         self.transformer = gpt
         self.text_pos_embedding = text_pos_emb
         self.embeddings = embeddings
+        self.final_norm = norm
         self.lm_head = nn.Sequential(norm, linear)
         self.kv_cache = kv_cache
         
@@ -200,7 +200,6 @@ class GPT2InferenceModel(GPT2PreTrainedModel):
             for layer_past in past
         )
 
-
 class ConditioningEncoder(nn.Module):
     def __init__(self,
                  spec_dim,
@@ -330,8 +329,9 @@ class UnifiedVoice(nn.Module):
         self.model_dim = model_dim
         self.max_conditioning_inputs = max_conditioning_inputs
         self.mel_length_compression = mel_length_compression
+        self.cond_num=32
         if use_perceiver==True:
-            self.perceiver_encoder = PerceiverResampler(model_dim, dim_context=100)
+            self.perceiver_encoder = PerceiverResampler(model_dim, dim_context=100, num_latents=self.cond_num)
         else:
             self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads)
         self.use_perceiver = use_perceiver
@@ -428,11 +428,11 @@ class UnifiedVoice(nn.Module):
         if get_attns:
             return gpt_out.attentions
 
-        enc = gpt_out.last_hidden_state[:, 1:]  # The first logit is tied to the speech_conditioning_input
+        enc = gpt_out.last_hidden_state[:, self.cond_num:]  # The first logit is tied to the speech_conditioning_input
         enc = self.final_norm(enc)
 
         if return_latent:
-            return enc[:, speech_conditioning_inputs.shape[1]:speech_conditioning_inputs.shape[1]+first_inputs.shape[1]], enc[:, -second_inputs.shape[1]:]
+            return enc[:, :first_inputs.shape[1]], enc[:, -second_inputs.shape[1]:]
 
         first_logits = enc[:, :first_inputs.shape[1]]
         first_logits = first_head(first_logits)
@@ -540,7 +540,7 @@ class UnifiedVoice(nn.Module):
         emb = torch.cat([conds, text_emb], dim=1)
         self.inference_model.store_mel_emb(emb)
 
-        fake_inputs = torch.full((emb.shape[0], conds.shape[1] + emb.shape[1],), fill_value=1, dtype=torch.long,
+        fake_inputs = torch.full((emb.shape[0], emb.shape[1]+1,), fill_value=1, dtype=torch.long,
                                  device=text_inputs.device)
         fake_inputs[:, -1] = self.start_mel_token
         trunc_index = fake_inputs.shape[1]
@@ -554,6 +554,7 @@ class UnifiedVoice(nn.Module):
 
         logits_processor = LogitsProcessorList([TypicalLogitsWarper(mass=typical_mass)]) if typical_sampling else LogitsProcessorList()
         max_length = trunc_index + self.max_mel_tokens - 1  if max_generate_length is None else trunc_index + max_generate_length
+        self.inputs=inputs
         gen = self.inference_model.generate(inputs, bos_token_id=self.start_mel_token, pad_token_id=self.stop_mel_token, eos_token_id=self.stop_mel_token,
                                             max_length=max_length, logits_processor=logits_processor,
                                             num_return_sequences=num_return_sequences, **hf_generate_kwargs)

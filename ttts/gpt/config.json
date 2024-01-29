@@ -8,10 +8,10 @@
     "logs_folder":"ttts/gpt/logs",
     "text_weight":0.01,
     "mel_weight":1,
-    "accumulate_num":16
+    "accumulate_num":1
   },
   "dataset": {
-    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/databaker_data.jsonl"
+    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/filtered_paths.jsonl"
   },
   "gpt":{
     "model_dim":1024,
@@ -23,13 +23,14 @@
     "number_text_tokens":256,
     "number_mel_codes":8194,
     "start_text_token":255,
-    "train_solo_embeddings":false
+    "train_solo_embeddings":false,
+    "use_perceiver":true
   },
   "dataloader":
   {
-    "batch_size" : 8,
+    "batch_size" : 32,
     "shuffle": true,
-    "num_workers" : 64,
+    "num_workers" : 32,
     "drop_last":true, 
     "pin_memory":true
   },

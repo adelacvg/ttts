@@ -1,6 +1,6 @@
 {
   "train": {
-    "train_steps":50000,
+    "train_steps":100000,
     "val_freq" : 100,
     "save_freq" : 1000,
     "keep_ckpts" : 3,

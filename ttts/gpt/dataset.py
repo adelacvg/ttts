@@ -27,6 +27,22 @@ def write_jsonl(path, all_paths):
             json.dump(item, file, ensure_ascii=False)
             file.write('\n')
 
+def find_and_randomly_select_mel_files(wav_file):
+    # 获取.wav文件所在文件夹路径
+    wav_folder = os.path.dirname(wav_file)
+
+    # 找到相同路径下的所有以.mel.pth结尾的文件
+    mel_files = [f for f in os.listdir(wav_folder) if f.endswith('.mel.pth')]
+
+    if mel_files:
+        # 随机选择一个.mel.pth文件
+        selected_mel_file = random.choice(mel_files)
+
+        # 返回完整路径
+        selected_mel_file_path = os.path.join(wav_folder, selected_mel_file)
+        return selected_mel_file_path
+    else:
+        print("未找到以.mel.pth结尾的文件")
 class GptTtsDataset(torch.utils.data.Dataset):
     def __init__(self, opt):
         self.tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
@@ -46,21 +62,24 @@ class GptTtsDataset(torch.utils.data.Dataset):
             quant_path = audiopath + '.melvq.pth'
             qmel = LongTensor(torch.load(quant_path)[0])
 
-            mel_path = audiopath + '.mel.pth'
+            mel_raw_path = audiopath + '.mel.pth'
+            mel_raw = torch.load(mel_raw_path)[0]
+            wav_length = mel_raw.shape[1]*256
+            mel_path = find_and_randomly_select_mel_files(audiopath)
             mel = torch.load(mel_path)[0]
-            wav_length = mel.shape[1]*256
             split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
             if random.random()>0.5:
                 mel = mel[:,:split]
             else:
                 mel = mel[:,split:]
-        except:
+        except Exception as e:
+            print(e)
             return None
 
         #load wav
         # wav,sr = torchaudio.load(audiopath)
         # wav = torchaudio.transforms.Resample(sr,24000)(wav)
-        if text.shape[0]>400 or qmel.shape[0]>600:
+        if text.shape[0]>400 or qmel.shape[0]>800:
             return None
 
         return text, qmel, mel, wav_length
