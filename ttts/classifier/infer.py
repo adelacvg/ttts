@@ -46,7 +46,7 @@ class MelDataset(torch.utils.data.Dataset):
         return len(self.paths)
 
 if __name__=='__main__':
-    model_path = '/home/hyc/tortoise_plus_zh/ttts/classifier/logs/2023-11-23-17-34-45/model-9.pt'
+    model_path = '/home/hyc/tortoise_plus_zh/ttts/classifier/logs/2024-02-04-15-50-46/model-24.pt'
     config_path = '~/tortoise_plus_zh/ttts/classifier/config.json'
     device = 'cuda'
     classifier = load_model('classifier', model_path, config_path, device)
@@ -61,7 +61,7 @@ if __name__=='__main__':
         mels = mels.to(device)
         label = classify_audio_clip(mels,classifier)
         for i in range(label.shape[0]):
-            if label[i][0]<0.1:
+            if label[i][0]<0.5:
                 with open('ttts/classifier/noise_files.txt','a') as f:
                     # print(os.path.join(os.getcwd(),paths[i]))
                     f.write(os.path.join(os.getcwd(),paths[i])+'\n')

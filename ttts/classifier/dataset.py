@@ -22,7 +22,7 @@ class PreprocessedMelDataset(torch.utils.data.Dataset):
             for line in file:
                 line=line.strip()
                 if line.endswith('.wav'):
-                    self.paths.append(line.replace('.wav','.mel.path'))
+                    self.paths.append(line+'.mel.pth')
                     self.labels += [0]
                 else:
                     self.paths += [str(p) for p in Path(line).rglob("*.mel.pth")]

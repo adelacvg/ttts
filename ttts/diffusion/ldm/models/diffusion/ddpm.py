@@ -863,7 +863,7 @@ class LatentDiffusion(DDPM):
         return cross, cat
     def forward(self, x, c, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
-        #classifier-free guidance
+        # classifier-free guidance
         # c['c_crossattn'][0], c['c_concat'][0] = self.random_mask_batch_torch(c['c_crossattn'][0], c['c_concat'][0])
         if self.model.conditioning_key is not None:
             assert c is not None

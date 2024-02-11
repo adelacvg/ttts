@@ -20,6 +20,8 @@ def read_txt(path):
 
 all_paths = read_jsonl('ttts/datasets/all_data.jsonl')
 noise_paths = set(read_txt('ttts/classifier/noise_files.txt'))
+unique_spk_paths = read_jsonl('/home/hyc/tortoise_plus_zh/ttts/datasets/unique_deleted.jsonl')
+unique_spk_paths = set([json['path'] for json in unique_spk_paths])
 out_path = 'ttts/datasets/filtered_paths.jsonl'
 for data in tqdm(all_paths):
     abs_path = os.path.expanduser(os.path.join('~/tortoise_plus_zh',data['path']))
