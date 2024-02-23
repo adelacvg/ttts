@@ -10,7 +10,7 @@ train:
   timesteps: 1000
 dataset:
   path: /home/hyc/tortoise_plus_zh/ttts/datasets/filtered_paths.jsonl
-  gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-12-24-14-22-14/model-70.pt
+  gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-23-08-11-49/model-2.pt
 dataloader:
   batch_size : 64
   shuffle: false
@@ -73,3 +73,9 @@ clip:
     pool_type: 'tok'
     pos_embed_type: 'learnable'
     final_ln_after_pool: false
+mrte:
+  mel_channels : 100
+  semantic_channels : 1024
+  model_channels : 512
+  out_channels : 1024
+  num_heads : 4

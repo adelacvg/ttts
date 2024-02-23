@@ -8,6 +8,7 @@ from ttts.diffusion.ldm.modules.diffusionmodules.util import (
 from ttts.diffusion.ldm.modules.attention import SpatialTransformer
 from ttts.diffusion.ldm.modules.diffusionmodules.openaimodel import TimestepEmbedSequential, ResBlock, Downsample, AttentionBlock, Upsample, convert_module_to_f16, convert_module_to_f32
 from ttts.diffusion.ldm.util import exists
+from ttts.diffusion.mrte import MRTE
 import torch as th
 from einops import rearrange, repeat
 import torch
@@ -312,6 +313,7 @@ class AA_diffusion(nn.Module):
         self.base_model = BaseModel(**config['base_diffusion'])
         print("base model params:", count_parameters(self.base_model))
         self.unconditioned_percentage = 0.1
+        self.mrte = MRTE(**config['mrte'])
         # self.control_model = instantiate_from_config(control_stage_config)
         # self.refer_model = instantiate_from_config(refer_config)
         self.control_scales = [1.0] * 13
@@ -327,6 +329,7 @@ class AA_diffusion(nn.Module):
                                    code_emb)
         return code_emb
     def forward(self, x, t, hint, refer, conditioning_free=False):
+        hint = self.mrte(refer, hint)
         if conditioning_free:
             hint = self.unconditioned_cat_embedding.repeat(x.shape[0], 1, x.shape[-1])
         else:
