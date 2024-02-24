@@ -9,8 +9,8 @@ train:
   unconditioned_percentage: 0.1
   timesteps: 1000
 dataset:
-  path: /home/hyc/tortoise_plus_zh/ttts/datasets/filtered_paths.jsonl
-  gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-23-08-11-49/model-2.pt
+  path: /home/hyc/tortoise_plus_zh/ttts/datasets/data_temp.jsonl
+  gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-23-08-11-49/model-32.pt
 dataloader:
   batch_size : 64
   shuffle: false
