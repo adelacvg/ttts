@@ -269,7 +269,10 @@ class BasicTransformerBlock(nn.Module):
         if refer is not None:
             return checkpoint(self._forward, (x, context, refer), self.parameters(), self.checkpoint)
         else:
-            return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
+            if context is not None:
+                return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
+            else:
+                return checkpoint(self._forward, (x,), self.parameters(), self.checkpoint)
 
     def _forward(self, x, context=None, refer=None):
         flag=0
@@ -279,12 +282,18 @@ class BasicTransformerBlock(nn.Module):
             x_len = x.shape[1]
             x = torch.cat([x,refer],dim=1)
             flag=1
-        x = self.attn1(self.norm1(x), context=context if self.disable_self_attn else None) + x
+        if self.disable_self_attn:
+            x = self.attn1(self.norm1(x), context=context) + x
+        else:
+            x = self.attn1(self.norm1(x)) + x
         if flag == 1:
             x = x[:,:x_len,:]
-        x = self.attn2(self.norm2(x), context=context) + x
+        if context is not None:
+            x = self.attn2(self.norm2(x), context=context) + x
+        else:
+            x = self.attn2(self.norm2(x)) + x
         x = self.ff(self.norm3(x)) + x
-        if flag==1:
+        if flag==1 or context==None:
             return x
         else:
             return x, refer
@@ -317,12 +326,18 @@ class SpatialTransformer(nn.Module):
                                      padding=0)
         else:
             self.proj_in = nn.Linear(in_channels, inner_dim)
-
-        self.transformer_blocks = nn.ModuleList(
-            [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim[d],
-                                   disable_self_attn=disable_self_attn, checkpoint=use_checkpoint)
-                for d in range(depth)]
-        )
+        if exists(context_dim):
+            self.transformer_blocks = nn.ModuleList(
+                [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim[d],
+                                    disable_self_attn=disable_self_attn, checkpoint=use_checkpoint)
+                    for d in range(depth)]
+            )
+        else:
+            self.transformer_blocks = nn.ModuleList(
+                [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout,
+                                    disable_self_attn=disable_self_attn, checkpoint=use_checkpoint)
+                    for d in range(depth)]
+            )
         if not use_linear:
             self.proj_out = zero_module(nn.Conv1d(inner_dim,
                                                   in_channels,
@@ -335,7 +350,7 @@ class SpatialTransformer(nn.Module):
 
     def forward(self, x, context=None, refer=None):
         # note: if no context is given, cross-attention defaults to self-attention
-        if not isinstance(context, list):
+        if exists(context) and not isinstance(context, list):
             context = [context]
         if refer is not None and not isinstance(refer, list):
             refer = [refer]
@@ -351,14 +366,17 @@ class SpatialTransformer(nn.Module):
             if refer is not None:
                 x = block(x, context=context[i], refer=refer[i])
             else:
-                x, refer_ret = block(x, context=context[i])
+                if exists(context):
+                    x, refer_ret = block(x, context=context[i])
+                else:
+                    x = block(x)
                 
         if self.use_linear:
             x = self.proj_out(x)
         x = rearrange(x, 'b t c -> b c t', t=t).contiguous()
         if not self.use_linear:
             x = self.proj_out(x)
-        if refer is not None:
+        if refer is not None or context is None:
             return x+x_in
         else:
             return x + x_in, refer_ret

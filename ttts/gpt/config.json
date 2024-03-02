@@ -1,6 +1,6 @@
 {
   "train": {
-    "train_steps":100000,
+    "train_steps":300000,
     "val_freq" : 100,
     "save_freq" : 1000,
     "keep_ckpts" : 3,
@@ -11,27 +11,29 @@
     "accumulate_num":1
   },
   "dataset": {
-    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/data_temp.jsonl"
+    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/small_data.jsonl"
   },
   "gpt":{
-    "model_dim":1024,
-    "max_mel_tokens":604,
-    "max_text_tokens":402,
-    "heads":16,
+    "model_dim":512,
+    "max_mel_tokens":1600,
+    "max_text_tokens":800,
+    "heads":8,
     "use_mel_codes_as_input":true,
-    "layers":15,
+    "layers":6,
     "number_text_tokens":256,
-    "number_mel_codes":8194,
+    "number_mel_codes":1026,
+    "start_mel_token":1024,
+    "stop_mel_token":1025,
     "start_text_token":255,
     "train_solo_embeddings":false,
-    "use_perceiver":true
+    "use_perceiver":false
   },
   "dataloader":
   {
     "batch_size" : 32,
     "shuffle": true,
     "num_workers" : 32,
-    "drop_last":true, 
+    "drop_last":true,
     "pin_memory":true
   },
   "comment":{

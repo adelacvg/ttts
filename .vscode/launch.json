@@ -6,7 +6,7 @@
     "configurations": [
         {
             "name": "train",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "accelerate.commands.launch",
             "args": ["ttts/vqvae/train.py"], // other args comes after train.py
@@ -15,12 +15,12 @@
         }, 
         {
             "name": "Python: Current File",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "env": {"CUDA_VISIBLE_DEVICES":"7"}
+            "env": {"CUDA_VISIBLE_DEVICES":"5"}
         }
     ]
 }

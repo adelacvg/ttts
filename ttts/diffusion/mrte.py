@@ -233,6 +233,12 @@ class MRTE(nn.Module):
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
         )
+        self.post_enc = nn.Sequential(
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+        )
+
 
     def forward(self, refer, text):
         ge = self.ge_enc(refer)
@@ -246,6 +252,7 @@ class MRTE(nn.Module):
             + text
             + ge.unsqueeze(-1)
         )
+        x = self.post_enc(x)
         x = self.c_post(x)
         return x
 

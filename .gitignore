@@ -4,6 +4,8 @@ ttts/datasets/*
 */**/logs/*
 */**/*.txt
 */**/*.jsonl
+*/**/*.bin
+ttts/pretrained_models/*
 */**/*.m4a
 ttts.egg-info/*
 .vscode/*

@@ -7,6 +7,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from einops import rearrange
+from ttts.diffusion.ldm.modules.diffusionmodules.util import (
+    conv_nd,
+    linear,
+    normalization,
+    zero_module,
+    timestep_embedding,
+)
+from ttts.diffusion.ldm.modules.attention import SpatialTransformer
+from ttts.diffusion.ldm.util import exists
 
 
 def default(val, d):
@@ -169,15 +178,13 @@ class DiscretizationLoss(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, chan, conv, activation):
+    def __init__(self, chan, conv, activation, num_heads=8):
         super().__init__()
-        self.net = nn.Sequential(
-            conv(chan, chan, 3, padding=1),
-            activation(),
-            conv(chan, chan, 3, padding=1),
-            activation(),
-            conv(chan, chan, 1),
-        )
+        dim_head = chan//num_heads
+        self.net = SpatialTransformer(
+                                chan, num_heads, dim_head, depth=1,
+                                disable_self_attn=False, use_linear=False,
+                            )
 
     def forward(self, x):
         return self.net(x) + x
@@ -204,6 +211,7 @@ class DiscreteVAE(nn.Module):
         positional_dims=2,
         num_tokens=512,
         codebook_dim=512,
+        out_channels=100,
         num_layers=3,
         num_resnet_blocks=0,
         hidden_dim=64,
@@ -285,7 +293,7 @@ class DiscreteVAE(nn.Module):
             dec_layers.insert(0, conv(codebook_dim, innermost_dim, 1))
 
         enc_layers.append(conv(innermost_dim, codebook_dim, 1))
-        dec_layers.append(conv(dec_out_chans, channels, 1))
+        dec_layers.append(conv(dec_out_chans, out_channels, 1))
 
         self.encoder = nn.Sequential(*enc_layers)
         self.decoder = nn.Sequential(*dec_layers)
@@ -359,8 +367,8 @@ class DiscreteVAE(nn.Module):
     # Note: This module is not meant to be run in forward() except while training. It has special logic which performs
     # evaluation using quantized values when it detects that it is being run in eval() mode, which will be substantially
     # more lossy (but useful for determining network performance).
-    def forward(self, img):
-        img = self.norm(img)
+    def forward(self, hubert, mel):
+        img = self.norm(hubert)
         logits = self.encoder(img).permute((0, 2, 3, 1) if len(img.shape) == 4 else (0, 2, 1))
         sampled, codes, commitment_loss = self.codebook(logits)
         sampled = sampled.permute((0, 3, 1, 2) if len(img.shape) == 4 else (0, 2, 1))
@@ -375,7 +383,7 @@ class DiscreteVAE(nn.Module):
             out, _ = self.decode(codes)
 
         # reconstruction loss
-        recon_loss = self.loss_fn(img, out, reduction="none")
+        recon_loss = self.loss_fn(mel, out, reduction="none")
 
         return recon_loss, commitment_loss, out
 

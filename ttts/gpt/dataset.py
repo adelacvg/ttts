@@ -57,32 +57,36 @@ class GptTtsDataset(torch.utils.data.Dataset):
             text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
             text = self.tok.encode(text)
             text = LongTensor(text)
+            text = torch.cat((text,text),0)
 
             # Fetch quantized MELs
-            quant_path = audiopath + '.melvq.pth'
+            quant_path = audiopath + '.vq.pth'
             qmel = LongTensor(torch.load(quant_path)[0])
+            qmel = torch.cat((qmel,qmel),0)
 
-            mel_raw_path = audiopath + '.mel.pth'
-            mel_raw = torch.load(mel_raw_path)[0]
-            wav_length = mel_raw.shape[1]*256
-            mel_path = find_and_randomly_select_mel_files(audiopath)
-            mel = torch.load(mel_path)[0]
-            split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
-            if random.random()>0.5:
-                mel = mel[:,:split]
-            else:
-                mel = mel[:,split:]
+            # mel_raw_path = audiopath + '.mel.pth'
+            # mel_raw = torch.load(mel_raw_path)[0]
+            # wav_length = mel_raw.shape[1]*256
+            # mel_path = find_and_randomly_select_mel_files(audiopath)
+            # mel = torch.load(mel_path)[0]
+            # mel = mel_raw.index_select(1, torch.randperm(mel_raw.shape[1]))
+            # split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
+            # if random.random()>0.5:
+            #     mel = mel[:,:split]
+            # else:
+            #     mel = mel[:,split:]
         except Exception as e:
             print(e)
             return None
 
         #load wav
-        # wav,sr = torchaudio.load(audiopath)
-        # wav = torchaudio.transforms.Resample(sr,24000)(wav)
-        if text.shape[0]>400 or qmel.shape[0]>800:
+        wav,sr = torchaudio.load(audiopath)
+        wav = torchaudio.transforms.Resample(sr,24000)(wav)
+        wav_length = wav.shape[-1]
+        if text.shape[0]>400 or qmel.shape[0]>600:
             return None
 
-        return text, qmel, mel, wav_length
+        return text, qmel, wav_length
 
     def __len__(self):
         return len(self.audiopaths_and_text)
@@ -102,32 +106,27 @@ class GptTtsCollater():
         qmel_lens = [len(x[1]) for x in batch]
         max_qmel_len = max(qmel_lens)
         # max_qmel_len = self.cfg['gpt']['max_mel_tokens']
-        raw_mel_lens = [x[2].shape[1] for x in batch]
-        max_raw_mel_len = max(raw_mel_lens)
-        wav_lens = [x[3] for x in batch]
+        # raw_mel_lens = [x[2].shape[1] for x in batch]
+        # max_raw_mel_len = max(raw_mel_lens)
+        wav_lens = [x[2] for x in batch]
         max_wav_len = max(wav_lens)
         texts = []
         qmels = []
-        raw_mels = []
         wavs = []
         # This is the sequential "background" tokens that are used as padding for text tokens, as specified in the DALLE paper.
         for b in batch:
-            text, qmel, raw_mel, wav = b
+            text, qmel, wav_length = b
             text = F.pad(text, (0, max_text_len-len(text)), value=0)
             texts.append(text)
             qmels.append(F.pad(qmel, (0, max_qmel_len-len(qmel)), value=0))
-            raw_mels.append(F.pad(raw_mel,(0, max_raw_mel_len-raw_mel.shape[1]), value=0))
 
         padded_qmel = torch.stack(qmels)
-        padded_raw_mel = torch.stack(raw_mels)
         padded_texts = torch.stack(texts)
         return {
             'padded_text': padded_texts,
             'text_lengths': LongTensor(text_lens),
             'padded_qmel': padded_qmel,
             'qmel_lengths': LongTensor(qmel_lens),
-            'padded_raw_mel': padded_raw_mel,
-            'raw_mel_lengths': LongTensor(raw_mel_lens),
             'wav_lens': LongTensor(wav_lens)
         }
 

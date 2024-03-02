@@ -9,6 +9,7 @@ import torch.utils.data
 import torchaudio
 import torchvision
 from tqdm import tqdm
+from ttts.utils import vc_utils
 
 from ttts.classifier.infer import read_jsonl
 
@@ -25,32 +26,52 @@ class PreprocessedMelDataset(torch.utils.data.Dataset):
         #     torch.save(self.paths, cache_path)
         paths = read_jsonl(opt['dataset']['path'])
         pre = os.path.expanduser(opt['dataset']['pre'])
-        self.paths = [os.path.join(pre,d['path'])+'.mel.pth' for d in paths]
+        self.paths = [os.path.join(pre,d['path']) for d in paths]
         self.pad_to = opt['dataset']['pad_to_samples']
         self.squeeze = opt['dataset']['should_squeeze']
 
     def __getitem__(self, index):
+        wav_path = self.paths[index]
+        mel_path = wav_path+'.mel.pth'
+        hubert_path = wav_path+'.hubert.pt'
         try:
-            mel = torch.load(self.paths[index])
+            mel = torch.load(mel_path)
+            hubert = torch.load(hubert_path)
         except:
-            mel = torch.zeros(1,100,self.pad_to)
+            return None
+        hubert = vc_utils.repeat_expand_2d(hubert.squeeze(0), mel.shape[-1]).unsqueeze(0)
         if mel.shape[-1] >= self.pad_to:
             start = torch.randint(0, mel.shape[-1] - self.pad_to+1, (1,))
             mel = mel[:, :, start:start+self.pad_to]
-            mask = torch.zeros_like(mel)
+            hubert = hubert[:, :, start:start+self.pad_to]
         else:
-            mask = torch.zeros_like(mel)
             padding_needed = self.pad_to - mel.shape[-1]
             mel = F.pad(mel, (0,padding_needed))
-            mask = F.pad(mask, (0,padding_needed), value=1)
+            hubert = F.pad(hubert, (0,padding_needed))
         assert mel.shape[-1] == self.pad_to
         if self.squeeze:
             mel = mel.squeeze()
-
-        return mel
+        mel = mel.detach()
+        hubert = hubert.detach()
+        return mel,hubert
 
     def __len__(self):
         return len(self.paths)
+
+class VQVAECollater():
+    def __init__(self):
+        pass
+    def __call__(self, batch):
+        batch = [x for x in batch if x is not None]
+        mels = [t[0] for t in batch]
+        huberts = [t[1] for t in batch]
+        mel = torch.stack(mels)
+        hubert = torch.stack(huberts)
+        return {
+            'mel': mel,
+            'hubert': hubert,
+        }
+
 
 
 if __name__ == '__main__':
@@ -63,7 +84,7 @@ if __name__ == '__main__':
         'n_workers': 0,
         'batch_size': 16,
     }
-    cfg = json.load(open('vqvae/config.json'))
+    cfg = json.load(open('ttts/vqvae/config.json'))
     ds = PreprocessedMelDataset(cfg)
     dl = torch.utils.data.DataLoader(ds, **cfg['dataloader'])
     i = 0

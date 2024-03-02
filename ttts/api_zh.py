@@ -1,66 +1,82 @@
 from pypinyin import lazy_pinyin, Style
 import torch
+from pydub import  AudioSegment
+import numpy as np
+from ttts.utils import vc_utils
 
 MODELS = {
-    'vqvae.pth':'/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-24-01-21-25/model-30.pt',
+    'vqvae.pth':'/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-02-27-12-40-29/model-26.pt',
     # 'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-12-24-14-22-14/model-70.pt',
-    'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-01-25-10-16-14/model-24.pt',
+    'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-28-09-01-13/model-9.pt',
     'clvp2.pth': '',
-    'diffusion.pth': '/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-01-09-17-44-36/model-855.pt',
+    'diffusion.pth': '/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-02-24-11-42-36/model-57.pt',
     'vocoder.pth': '~/tortoise_plus_zh/ttts/pretrained_models/pytorch_model.bin',
     'rlg_auto.pth': '',
     'rlg_diffuser.pth': '',
 }
 from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 import torch.nn.functional as F
-device = 'cuda'
-text = "大家好，今天来点大家想看的东西。"
+cond_audio = 'ttts/6.wav'
+# cond_text = "霞浦县衙城镇乌旗瓦窑村水位猛涨。"
+# cond_text = "现场都是人，五辆警车好不容易找到位置停下。"
+# cond_text = "除了曾经让全人类都畏惧的麻疹和天花之外，传染率"
+# cond_text = "开始步行导航，今天我也是没有迟到哦。"
+cond_text = "这是县交警队的一个小据点。"
+
+device = 'cuda:0'
+text = "这是县交警队的一个小据点。"
+# text = "大家好，今天来点大家想看的东西。"
 # text = "霞浦县衙城镇乌旗瓦窑村水位猛涨。"
 # text = '高德官方网站，拥有全面、精准的地点信息，公交驾车路线规划，特色语音导航，商家团购、优惠信息。'
 # text = '四是四，十是十，十四是十四，四十是四十。'
 # text = '八百标兵奔北坡，炮兵并排北边跑。炮兵怕把标兵碰，标兵怕碰炮兵炮。'
 # text = '黑化肥发灰，灰化肥发黑。黑化肥挥发会发灰，灰化肥挥发会发黑。'
 # text = '先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。然侍卫之臣不懈于内，忠志之士忘身于外者，盖追先帝之殊遇，欲报之于陛下也。诚宜开张圣听，以光先帝遗德，恢弘志士之气，不宜妄自菲薄，引喻失义，以塞忠谏之路也。'
+text = cond_text + text
 pinyin = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
 tokenizer = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
 text_tokens = torch.IntTensor(tokenizer.encode(pinyin)).unsqueeze(0).to(device)
 text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
 text_tokens = text_tokens.to(device)
+print(pinyin)
+# print(text_tokens)
 from ttts.utils.infer_utils import load_model
 from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
 import torchaudio
+# device = 'gpu:0'
 gpt = load_model('gpt',MODELS['gpt.pth'],'ttts/gpt/config.json',device)
 gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=False, half=False)
 # diffusion = load_model('diffusion',MODELS['diffusion.pth'],'ttts/diffusion/config.json',device)
-cond_audio = 'ttts/3.wav'
-audio,sr = torchaudio.load(cond_audio)
-if audio.shape[0]>1:
-    audio = audio[0].unsqueeze(0)
-audio = torchaudio.transforms.Resample(sr,24000)(audio)
-cond_mel = MelSpectrogramFeatures()(audio).to(device)
-auto_conditioning = cond_mel
+sound = AudioSegment.from_file(cond_audio)
+sound = sound.set_frame_rate(16000)
+sound = sound.set_channels(1)
+samples = np.frombuffer(sound.raw_data, np.int16).flatten().astype(np.float32) / 32768.0
+wav16k = torch.from_numpy(samples).unsqueeze(0)
+wav16k = wav16k.to(device)
+hmodel = vc_utils.get_hubert_model().to(device)
+c = vc_utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
+c = c.to(device)
+vqvae = load_model('vqvae', MODELS['vqvae.pth'], 'ttts/vqvae/config.json', device)
+cond_melvq = vqvae.get_codebook_indices(c)
+print(text_tokens)
+print(cond_melvq)
 settings = {'temperature': .8, 'length_penalty': 1.0, 'repetition_penalty': 2.0,
                     'top_p': .8,
                     'cond_free_k': 2.0, 'diffusion_temperature': 1.0}
 top_p = .8
 temperature = .8
 autoregressive_batch_size = 1
-length_penalty = 1.0
+length_penalty = 2.0
 repetition_penalty = 2.0
 max_mel_tokens = 600
-codes = gpt.inference_speech(auto_conditioning, text_tokens,
+# text_tokens = F.pad(text_tokens,(0,400-text_tokens.shape[1]),value=0)
+codes = gpt.inference_speech(text_tokens,
+                                cond_melvq,
                                 do_sample=True,
                                 top_p=top_p,
                                 temperature=temperature,
                                 num_return_sequences=autoregressive_batch_size,
-                                length_penalty=length_penalty,
+                                # length_penalty=length_penalty,
                                 repetition_penalty=repetition_penalty,
                                 max_generate_length=max_mel_tokens)
-vqvae = load_model('vqvae', MODELS['vqvae.pth'], 'ttts/vqvae/config.json', device)
-mel = vqvae.decode(codes[:,:-1])[0]
-codes_gt = vqvae.get_codebook_indices(cond_mel)
-from ttts.vocoder.vocos import Vocos
-vocos = Vocos.from_pretrained('ttts/pretrained_models/pytorch_model.bin','ttts/vocoder/config.yaml').to(device)
-audio = vocos.decode(mel)
-print(audio.shape)
-torchaudio.save('gen.wav',audio.detach().cpu(), 24000)
+print(codes)

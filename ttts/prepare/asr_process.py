@@ -16,12 +16,6 @@ inference_pipeline = pipeline(
             model='damo/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',
             model_revision="v1.2.4"
         )
-# inference_pipeline = pipeline(
-# task=Tasks.auto_speech_recognition,
-# model="damo/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-# )
-
-# out_path = 'ttts/datasets/all_data.jsonl'
 def process_file_asr(paths):
     file_path, out_path = paths
     data = pd.DataFrame(columns=['file_path', 'text'])

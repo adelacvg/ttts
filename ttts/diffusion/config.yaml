@@ -13,7 +13,7 @@ dataset:
   gpt_path: /home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-23-08-11-49/model-32.pt
 dataloader:
   batch_size : 64
-  shuffle: false
+  shuffle: true
   num_workers : 64
   drop_last: true 
   pin_memory: true
@@ -23,7 +23,7 @@ diffusion:
   num_layers: 10 
   in_channels: 100 
   out_channels: 200
-  in_latent_channels: 1024 
+  in_latent_channels: 512 
   in_tokens: 8193 
   dropout: 0 
   use_fp16: false 
@@ -75,7 +75,7 @@ clip:
     final_ln_after_pool: false
 mrte:
   mel_channels : 100
-  semantic_channels : 1024
+  semantic_channels : 512
   model_channels : 512
-  out_channels : 1024
+  out_channels : 512
   num_heads : 4

@@ -101,8 +101,8 @@ class Trainer(object):
                     if data==None:
                         continue
                     # speech_conditioning_latent, text_inputs, text_lengths, mel_codes, wav_lengths
-                    input_params = [data['padded_raw_mel'], data['padded_text'], data['text_lengths'],
-                        data['padded_qmel'], data['wav_lens']]
+                    input_params = [data['padded_text'], data['text_lengths'],
+                        data['padded_qmel'], data['wav_lens'], data['qmel_lengths']]
                     input_params = [d.to(device) for d in input_params]
                     with self.accelerator.autocast():
                         loss_text, loss_mel, mel_logits = self.gpt(*input_params)
@@ -141,5 +141,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-01-26-11-46-57/model-59.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-23-08-11-49/model-32.pt')
     trainer.train()

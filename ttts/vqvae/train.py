@@ -5,15 +5,16 @@ from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from ttts.utils.utils import EMA, clean_checkpoints, plot_spectrogram_to_numpy, summarize, update_moving_average
-from ttts.vqvae.dataset import PreprocessedMelDataset
+from ttts.vqvae.dataset import PreprocessedMelDataset, VQVAECollater
 import torch
 import os
 from torch.utils.data import DataLoader
 from torch import nn
 from torch.optim import AdamW
 from accelerate import Accelerator
+from ttts.vqvae.rvq1 import RVQ1
 
-from ttts.vqvae.xtts_dvae import DiscreteVAE
+from ttts.vqvae.dvae import DiscreteVAE
 
 
 def set_requires_grad(model, val):
@@ -37,9 +38,10 @@ class Trainer(object):
     def __init__(self, cfg_path='ttts/vqvae/config.json'):
         self.accelerator = Accelerator()
         self.cfg = json.load(open(cfg_path))
-        self.vqvae = DiscreteVAE(**self.cfg['vqvae'])
+        self.vqvae = RVQ1(**self.cfg['vqvae'])
         self.dataset = PreprocessedMelDataset(self.cfg)
-        self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'])
+        self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'],collate_fn=VQVAECollater())
+        
         self.train_steps = self.cfg['train']['train_steps']
         self.val_freq = self.cfg['train']['val_freq']
         if self.accelerator.is_main_process:
@@ -47,7 +49,7 @@ class Trainer(object):
             now = datetime.now()
             self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
             self.logs_folder.mkdir(exist_ok = True, parents=True)
-        self.ema_updater = EMA(0.999)
+        # self.ema_updater = EMA(0.999)
         self.optimizer = AdamW(self.vqvae.parameters(),lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
         self.vqvae, self.dataloader, self.optimizer = self.accelerator.prepare(self.vqvae, self.dataloader, self.optimizer)
         self.dataloader = cycle(self.dataloader)
@@ -86,12 +88,14 @@ class Trainer(object):
         with tqdm(initial = self.step, total = self.train_steps, disable = not accelerator.is_main_process) as pbar:
             while self.step < self.train_steps:
                 total_loss = 0.
+                # with torch.autograd.detect_anomaly():
                 for _ in range(self.gradient_accumulate_every):
-                    mel = next(self.dataloader)
+                    data = next(self.dataloader)
+                    mel, hubert = data['mel'],data['hubert']
                     mel = mel.to(device).squeeze(1)
+                    hubert = hubert.to(device).squeeze(1)
                     with self.accelerator.autocast():
-                        recon_loss, commitment_loss, mel_recon = self.vqvae(mel)
-                        recon_loss = torch.mean(recon_loss)
+                        recon_loss, commitment_loss, mel_recon = self.vqvae(hubert, mel)
                         loss = recon_loss+0.25*commitment_loss
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
@@ -112,13 +116,13 @@ class Trainer(object):
                         eval_model = self.accelerator.unwrap_model(self.vqvae)
                         eval_model.eval()
                         # mel_recon_ema = self.ema_model.infer(mel)[0]
-                        mel_recon_ema = eval_model.infer(mel)[0]
+                        _, _, mel_recon_eval = eval_model(hubert, mel)
                         eval_model.train()
                     scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm}
                     image_dict = {
                         "all/spec": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                         "all/spec_pred": plot_spectrogram_to_numpy(mel_recon[0, :, :].detach().unsqueeze(-1).cpu()),
-                        "all/spec_pred_ema": plot_spectrogram_to_numpy(mel_recon_ema[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "all/spec_pred_eval": plot_spectrogram_to_numpy(mel_recon_eval[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
                     summarize(
                         writer=writer,

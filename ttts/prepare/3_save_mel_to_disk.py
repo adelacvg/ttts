@@ -20,7 +20,7 @@ def process_mels(file_paths, max_workers):
     results = [result for result in results if result is not None]
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--path',default='ttts/datasets/cliped_datasets')
+    parser.add_argument('--path',default='ttts/datasets/hq_dataset')
     args = parser.parse_args()
     files = find_audio_files(args.path, ['.wav'])
     process_mels(files,8)

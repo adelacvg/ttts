@@ -142,7 +142,7 @@ class Trainer(object):
         state_dict = data['model']
         self.step = data['step']
         model = self.accelerator.unwrap_model(self.diffusion)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict,strict=False)
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
@@ -258,5 +258,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-01-09-17-44-36/model-855.pt')
+    trainer.load('/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-02-26-03-08-49/model-60.pt')
     trainer.train()

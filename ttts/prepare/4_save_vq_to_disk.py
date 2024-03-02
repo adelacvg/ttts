@@ -19,7 +19,7 @@ def extract_vq(file_paths, max_workers):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--json_path',default='ttts/datasets/filtered_paths.jsonl')
+    parser.add_argument('--json_path',default='ttts/datasets/small_data.jsonl')
     args = parser.parse_args()
     # model_path = '/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2023-11-24-01-21-25/model-30.pt'
     # paths = get_paths_with_cache('ttts/datasets/cliped_datasets','ttts/datasets/wav_clip_path.cache')
