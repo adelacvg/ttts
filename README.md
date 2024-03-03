@@ -1,5 +1,6 @@
-# TTTS(WIP)
+# TTTS_v2(WIP)
 
+## V2 is built upon the VALL-E style GPT, and VQ-VAE is a context-aware structure. The rest is the same as the master version.
 This project is for training tortoise-tts like model.
 Most of the codes are from [tortoise tts](https://github.com/neonbjb/tortoise-tts) and [xtts](https://github.com/coqui-ai/TTS/tree/dev/TTS/tts/layers/xtts).
 The distinguishing factor lies in certain training details and the diffusion model. This repository employs the same architecture as animate-anyone, incorporating a referencenet for enhanced zero-shot performance.
