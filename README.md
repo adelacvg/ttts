@@ -2,6 +2,7 @@
 
 ## V2 is built upon the VALL-E style GPT, and VQ-VAE is a context-aware structure. The rest is the same as the master version.
 
+![image](arch_v2.png)
 
 # Demo
 Coming soon.

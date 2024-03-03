@@ -29,7 +29,7 @@
   },
   "dataloader":
   {
-    "batch_size" : 64,
+    "batch_size" : 32,
     "shuffle": true,
     "num_workers" : 32,
     "drop_last":true,

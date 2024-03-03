@@ -62,25 +62,12 @@ class GptTtsDataset(torch.utils.data.Dataset):
             quant_path = audiopath + '.vq.pth'
             qmel = LongTensor(torch.load(quant_path))
 
-            # mel_raw_path = audiopath + '.mel.pth'
-            # mel_raw = torch.load(mel_raw_path)[0]
-            # wav_length = mel_raw.shape[1]*256
-            # mel_path = find_and_randomly_select_mel_files(audiopath)
-            # mel = torch.load(mel_path)[0]
-            # mel = mel_raw.index_select(1, torch.randperm(mel_raw.shape[1]))
-            # split = random.randint(int(mel.shape[1]//3), int(mel.shape[1]//3*2))
-            # if random.random()>0.5:
-            #     mel = mel[:,:split]
-            # else:
-            #     mel = mel[:,split:]
         except Exception as e:
             print(e)
             return None
-
         #load wav
         wav,sr = torchaudio.load(audiopath)
         wav = torchaudio.functional.resample(wav, sr, 24000)
-        # wav = torchaudio.transforms.Resample(sr,24000)(wav)
         wav_length = wav.shape[-1]
         if text.shape[0]>400 or qmel.shape[0]>600:
             return None
@@ -101,12 +88,8 @@ class GptTtsCollater():
             return None
         text_lens = [len(x[0]) for x in batch]
         max_text_len = max(text_lens)
-        # max_text_len = self.cfg['gpt']['max_text_tokens']
         qmel_lens = [len(x[1]) for x in batch]
         max_qmel_len = max(qmel_lens)
-        # max_qmel_len = self.cfg['gpt']['max_mel_tokens']
-        # raw_mel_lens = [x[2].shape[1] for x in batch]
-        # max_raw_mel_len = max(raw_mel_lens)
         wav_lens = [x[2] for x in batch]
         max_wav_len = max(wav_lens)
         texts = []

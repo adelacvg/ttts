@@ -9,7 +9,7 @@
   },
   "dataset": {
     "pre":"~/tortoise_plus_zh",
-    "path":"ttts/datasets/data_temp.jsonl",
+    "path":"ttts/datasets/hq_data.jsonl",
     "pad_to_samples":200,
     "should_squeeze": true
   },
