@@ -9,8 +9,6 @@ from transformers.utils.model_parallel_utils import get_device_map, assert_devic
 from ttts.gpt.perceiver import PerceiverResampler
 from ttts.utils.utils import AttentionBlock
 from ttts.utils.typical_sampling import TypicalLogitsWarper
-
-
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
 
@@ -31,6 +29,7 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         return F.relu(self.net(x) + x)
+
 
 class GPT2InferenceModel(GPT2PreTrainedModel):
     def __init__(self, config, gpt, text_pos_emb, embeddings, norm, linear, kv_cache=False):
@@ -200,6 +199,7 @@ class GPT2InferenceModel(GPT2PreTrainedModel):
             for layer_past in past
         )
 
+
 class ConditioningEncoder(nn.Module):
     def __init__(self,
                  spec_dim,
@@ -262,7 +262,7 @@ def build_hf_gpt_transformer(layers, model_dim, heads, max_mel_seq_len, max_text
     # Built-in token embeddings are unused.
     del gpt.wte
     return gpt, LearnedPositionEmbeddings(max_mel_seq_len, model_dim), LearnedPositionEmbeddings(max_text_seq_len, model_dim),\
-        None, None
+           None, None
 
 
 class MelEncoder(nn.Module):
@@ -294,7 +294,7 @@ class UnifiedVoice(nn.Module):
                  mel_length_compression=1024, number_text_tokens=256,
                  start_text_token=None, number_mel_codes=8194, start_mel_token=8192,
                  stop_mel_token=8193, train_solo_embeddings=False, use_mel_codes_as_input=True,
-                 checkpointing=True, types=1, use_perceiver=False):
+                 checkpointing=True, types=1):
         """
         Args:
             layers: Number of layers in transformer stack.
@@ -329,12 +329,7 @@ class UnifiedVoice(nn.Module):
         self.model_dim = model_dim
         self.max_conditioning_inputs = max_conditioning_inputs
         self.mel_length_compression = mel_length_compression
-        self.cond_num=32
-        # if use_perceiver==True:
-        #     self.perceiver_encoder = PerceiverResampler(model_dim, dim_context=100, num_latents=self.cond_num)
-        # else:
-        #     self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads)
-        self.use_perceiver = use_perceiver
+        # self.conditioning_encoder = ConditioningEncoder(80, model_dim, num_attn_heads=heads)
         self.text_embedding = nn.Embedding(self.number_text_tokens*types+1, model_dim)
         if use_mel_codes_as_input:
             self.mel_embedding = nn.Embedding(self.number_mel_codes, model_dim)
@@ -421,16 +416,18 @@ class UnifiedVoice(nn.Module):
     def get_logits(self, first_inputs, first_head, second_inputs=None, second_head=None, get_attns=False, return_latent=False):
         if second_inputs is not None:
             emb = torch.cat([first_inputs, second_inputs], dim=1)
+        else:
+            emb =  first_inputs
 
         gpt_out = self.gpt(inputs_embeds=emb, return_dict=True, output_attentions=get_attns)
         if get_attns:
             return gpt_out.attentions
 
-        enc = gpt_out.last_hidden_state[:, self.cond_num:]  # The first logit is tied to the speech_conditioning_input
+        enc = gpt_out.last_hidden_state
         enc = self.final_norm(enc)
 
         if return_latent:
-            return enc[:, :first_inputs.shape[1]], enc[:, -second_inputs.shape[1]:]
+            return enc[:, speech_conditioning_inputs.shape[1]:speech_conditioning_inputs.shape[1]+first_inputs.shape[1]], enc[:, -second_inputs.shape[1]:]
 
         first_logits = enc[:, :first_inputs.shape[1]]
         first_logits = first_head(first_logits)
@@ -444,22 +441,17 @@ class UnifiedVoice(nn.Module):
             return first_logits
 
     def get_conditioning(self, speech_conditioning_input):
-        if self.use_perceiver is not True:
-            speech_conditioning_input = speech_conditioning_input.unsqueeze(1) if len(
+        speech_conditioning_input = speech_conditioning_input.unsqueeze(1) if len(
             speech_conditioning_input.shape) == 3 else speech_conditioning_input
         conds = []
         for j in range(speech_conditioning_input.shape[1]):
-            if self.use_perceiver == True:
-                conds = self.perceiver_encoder(speech_conditioning_input.transpose(1,2))
-            else:
-                conds.append(self.conditioning_encoder(speech_conditioning_input[:, j]))
-        if self.use_perceiver is not True:
-            conds = torch.stack(conds, dim=1)
-            conds = conds.mean(dim=1)
+            conds.append(self.conditioning_encoder(speech_conditioning_input[:, j]))
+        conds = torch.stack(conds, dim=1)
+        conds = conds.mean(dim=1)
         return conds
 
-    def forward(self, text_inputs, text_lengths, mel_codes, wav_lengths, qmel_lengths, types=None, text_first=True, raw_mels=None, return_attentions=False,
-                return_latent=False, clip_inputs=False):
+    def forward(self, text_inputs, text_lengths, mel_codes, wav_lengths, types=None, text_first=True, raw_mels=None, return_attentions=False,
+                return_latent=False, clip_inputs=True):
         """
         Forward pass that uses both text and voice in either text conditioning mode or voice conditioning mode
         (actuated by `text_first`).
@@ -478,6 +470,16 @@ class UnifiedVoice(nn.Module):
         # Types are expressed by expanding the text embedding space.
         if types is not None:
             text_inputs = text_inputs * (1+types).unsqueeze(-1)
+
+        if clip_inputs:
+            # This model will receive micro-batches with a ton of padding for both the text and MELs. Ameliorate this by
+            # chopping the inputs by the maximum actual length.
+            max_text_len = text_lengths.max()
+            text_inputs = text_inputs[:, :max_text_len]
+            max_mel_len = wav_lengths.max() // self.mel_length_compression
+            mel_codes = mel_codes[:, :max_mel_len]
+            if raw_mels is not None:
+                raw_mels = raw_mels[:, :, :max_mel_len*4]
         mel_codes = self.set_mel_padding(mel_codes, wav_lengths)
         text_inputs = F.pad(text_inputs, (0,1), value=self.stop_text_token)
         mel_codes = F.pad(mel_codes, (0,1), value=self.stop_mel_token)
@@ -485,18 +487,49 @@ class UnifiedVoice(nn.Module):
         text_inputs, text_targets = self.build_aligned_inputs_and_targets(text_inputs, self.start_text_token, self.stop_text_token)
         text_emb = self.text_embedding(text_inputs) + self.text_pos_embedding(text_inputs)
         mel_codes, mel_targets = self.build_aligned_inputs_and_targets(mel_codes, self.start_mel_token, self.stop_mel_token)
-        mel_emb = self.mel_embedding(mel_codes) + self.mel_pos_embedding(mel_codes)
+        if raw_mels is not None:
+            mel_inp = F.pad(raw_mels, (0, 8))
+        else:
+            mel_inp = mel_codes
+        mel_emb = self.mel_embedding(mel_inp)
+        mel_emb = mel_emb + self.mel_pos_embedding(mel_codes)
 
-        text_logits, mel_logits = self.get_logits(text_emb, self.text_head, mel_emb, self.mel_head, get_attns=return_attentions, return_latent=return_latent)
-        if return_latent:
-            return mel_logits[:, :-2]  # Despite the name, these are not logits. Strip off the two tokens added by this forward pass.
+        if text_first:
+            text_logits, mel_logits = self.get_logits(text_emb, self.text_head, mel_emb, self.mel_head, get_attns=return_attentions, return_latent=return_latent)
+            if return_latent:
+                return mel_logits[:, :-2]  # Despite the name, these are not logits. Strip off the two tokens added by this forward pass.
+        else:
+            mel_logits, text_logits = self.get_logits(mel_emb, self.mel_head, text_emb, self.text_head, get_attns=return_attentions, return_latent=return_latent)
+            if return_latent:
+                return text_logits[:, :-2]  # Despite the name, these are not logits. Strip off the two tokens added by this forward pass.
 
         if return_attentions:
             return mel_logits
         loss_text = F.cross_entropy(text_logits, text_targets.long())
         loss_mel = F.cross_entropy(mel_logits, mel_targets.long())
         return loss_text.mean(), loss_mel.mean(), mel_logits
-
+    def compute_embeddings(
+        self,
+        cond_latents,
+        text_inputs,
+    ):
+        text_inputs = F.pad(text_inputs, (0, 1), value=self.stop_text_token)
+        text_inputs = F.pad(text_inputs, (1, 0), value=self.start_text_token)
+        emb = self.text_embedding(text_inputs) + self.text_pos_embedding(text_inputs)
+        conds = cond_latents.unsqueeze(1)
+        emb = torch.cat([conds, emb], dim=1)
+        self.inference_model.store_mel_emb(emb)
+        gpt_inputs = torch.full(
+            (
+                emb.shape[0],
+                emb.shape[1] + 1,  # +1 for the start_mel_token
+            ),
+            fill_value=1,
+            dtype=torch.long,
+            device=text_inputs.device,
+        )
+        gpt_inputs[:, -1] = self.start_mel_token
+        return gpt_inputs
     def inference_speech(self, text_inputs, mel_codes, input_tokens=None, num_return_sequences=1,
                          max_generate_length=None, typical_sampling=False, typical_mass=.9, **hf_generate_kwargs):        
 
@@ -504,14 +537,13 @@ class UnifiedVoice(nn.Module):
         text_inputs, _ = self.build_aligned_inputs_and_targets(text_inputs, self.start_text_token, self.stop_text_token)
         text_emb = self.text_embedding(text_inputs) + self.text_pos_embedding(text_inputs)
         mel_codes, _ = self.build_aligned_inputs_and_targets(mel_codes, self.start_mel_token, self.stop_mel_token)
-        mel_emb = self.mel_embedding(mel_codes) + self.mel_pos_embedding(mel_codes)
-        emb = torch.cat([text_emb, mel_emb], dim=1)
 
-        self.inference_model.store_mel_emb(text_emb)
+        emb = text_emb
+        self.inference_model.store_mel_emb(emb)
 
-        fake_inputs = torch.full((emb.shape[0], emb.shape[1],), fill_value=1, dtype=torch.long,
+        fake_inputs = torch.full((emb.shape[0], emb.shape[1]+mel_codes.shape[-1],), fill_value=1, dtype=torch.long,
                                  device=text_inputs.device)
-        fake_inputs[:,-mel_codes.shape[1]:] = mel_codes
+        # fake_inputs[:, -1] = self.start_mel_token
         trunc_index = fake_inputs.shape[1]
         if input_tokens is None:
             inputs = fake_inputs
@@ -523,13 +555,21 @@ class UnifiedVoice(nn.Module):
 
         logits_processor = LogitsProcessorList([TypicalLogitsWarper(mass=typical_mass)]) if typical_sampling else LogitsProcessorList()
         max_length = trunc_index + self.max_mel_tokens - 1  if max_generate_length is None else trunc_index + max_generate_length
-        self.inputs=inputs
         gen = self.inference_model.generate(inputs, bos_token_id=self.start_mel_token, pad_token_id=self.stop_mel_token, eos_token_id=self.stop_mel_token,
                                             max_length=max_length, logits_processor=logits_processor,
                                             num_return_sequences=num_return_sequences, **hf_generate_kwargs)
         return gen[:, trunc_index:]
 
-
+    def get_generator(self, fake_inputs, **hf_generate_kwargs):
+        return self.inference_model.generate_stream(
+            fake_inputs,
+            bos_token_id=self.start_mel_token,
+            pad_token_id=self.stop_mel_token,
+            eos_token_id=self.stop_mel_token,
+            max_length=500,
+            do_stream=True,
+            **hf_generate_kwargs,
+        )
 if __name__ == '__main__':
     gpt = UnifiedVoice(model_dim=256, heads=4, train_solo_embeddings=True, use_mel_codes_as_input=True, max_conditioning_inputs=4)
     l = gpt(torch.randn(2, 3, 80, 800),

@@ -61,7 +61,7 @@ class GptTtsDataset(torch.utils.data.Dataset):
 
             # Fetch quantized MELs
             quant_path = audiopath + '.vq.pth'
-            qmel = LongTensor(torch.load(quant_path)[0])
+            qmel = LongTensor(torch.load(quant_path))
             qmel = torch.cat((qmel,qmel),0)
 
             # mel_raw_path = audiopath + '.mel.pth'
@@ -81,7 +81,8 @@ class GptTtsDataset(torch.utils.data.Dataset):
 
         #load wav
         wav,sr = torchaudio.load(audiopath)
-        wav = torchaudio.transforms.Resample(sr,24000)(wav)
+        wav = torchaudio.functional.resample(wav, sr, 24000)
+        # wav = torchaudio.transforms.Resample(sr,24000)(wav)
         wav_length = wav.shape[-1]
         if text.shape[0]>400 or qmel.shape[0]>600:
             return None

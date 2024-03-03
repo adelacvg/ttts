@@ -29,31 +29,45 @@ class PreprocessedMelDataset(torch.utils.data.Dataset):
         self.paths = [os.path.join(pre,d['path']) for d in paths]
         self.pad_to = opt['dataset']['pad_to_samples']
         self.squeeze = opt['dataset']['should_squeeze']
+        # self.expand_times = 1.875#24k 256hop 93.75hz 16k 320hop 50hz  93.75/50=1.875
 
     def __getitem__(self, index):
         wav_path = self.paths[index]
         mel_path = wav_path+'.mel.pth'
-        hubert_path = wav_path+'.hubert.pt'
+        # hubert_path = wav_path+'.hubert.pt'
         try:
             mel = torch.load(mel_path)
-            hubert = torch.load(hubert_path)
+            # hubert = torch.load(hubert_path)
         except:
             return None
-        hubert = vc_utils.repeat_expand_2d(hubert.squeeze(0), mel.shape[-1]).unsqueeze(0)
-        if mel.shape[-1] >= self.pad_to:
+        
+        if mel.shape[-1] > self.pad_to:
             start = torch.randint(0, mel.shape[-1] - self.pad_to+1, (1,))
             mel = mel[:, :, start:start+self.pad_to]
-            hubert = hubert[:, :, start:start+self.pad_to]
-        else:
-            padding_needed = self.pad_to - mel.shape[-1]
+        padding_needed = self.pad_to - mel.shape[-1]
+        if padding_needed > 0:
             mel = F.pad(mel, (0,padding_needed))
-            hubert = F.pad(hubert, (0,padding_needed))
-        assert mel.shape[-1] == self.pad_to
-        if self.squeeze:
-            mel = mel.squeeze()
-        mel = mel.detach()
-        hubert = hubert.detach()
-        return mel,hubert
+        return mel
+        # hubert = vc_utils.repeat_expand_2d(hubert.squeeze(0), mel.shape[-1]).unsqueeze(0)
+        # if hubert.shape[-1] > self.pad_to:
+        #     start = torch.randint(0, hubert.shape[-1] - self.pad_to+1, (1,))
+        #     end = int((start+self.pad_to)*self.expand_times)
+        #     mel = mel[:, :, int(start*self.expand_times):end]
+        #     hubert = hubert[:, :, start:start+self.pad_to]
+        # padding_needed = self.pad_to - hubert.shape[-1]
+        # if padding_needed > 0:
+        #     hubert = F.pad(hubert, (0,padding_needed))
+        # padding_needed = int(int(self.pad_to*self.expand_times) - mel.shape[-1])
+        # if padding_needed > 0:
+        #     mel = F.pad(mel, (0,padding_needed))
+        # mel = mel[:,:,:int(self.pad_to*self.expand_times)]
+        # assert hubert.shape[-1] == self.pad_to
+        # assert mel.shape[-1] == int(self.pad_to * self.expand_times)
+        # if self.squeeze:
+        #     mel = mel.squeeze()
+        # mel = mel.detach()
+        # hubert = hubert.detach()
+        # return mel,hubert
 
     def __len__(self):
         return len(self.paths)
@@ -64,12 +78,12 @@ class VQVAECollater():
     def __call__(self, batch):
         batch = [x for x in batch if x is not None]
         mels = [t[0] for t in batch]
-        huberts = [t[1] for t in batch]
+        # huberts = [t[1] for t in batch]
         mel = torch.stack(mels)
-        hubert = torch.stack(huberts)
+        # hubert = torch.stack(huberts)
         return {
             'mel': mel,
-            'hubert': hubert,
+            # 'hubert': hubert,
         }
 
 

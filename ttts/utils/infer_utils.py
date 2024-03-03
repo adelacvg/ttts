@@ -1,4 +1,4 @@
-from ttts.vqvae.dvae import DiscreteVAE
+from ttts.vqvae.rvq1 import RVQ1
 from ttts.diffusion.model import DiffusionTts
 from ttts.gpt.model import UnifiedVoice
 from ttts.classifier.model import AudioMiniEncoderWithClassifierHead
@@ -16,7 +16,7 @@ def load_model(model_name, model_path, config_path, device):
     else:
         config = OmegaConf.load(config_path)
     if model_name=='vqvae':
-        model = RVQ1(**self.cfg['vqvae'])
+        model = RVQ1(**config['vqvae'])
         sd = torch.load(model_path, map_location=device)['model']
         model.load_state_dict(sd, strict=True)
         model = model.to(device)

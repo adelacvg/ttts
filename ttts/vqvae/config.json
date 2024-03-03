@@ -14,10 +14,10 @@
     "should_squeeze": true
   },
   "vqvae":{
-    "dimension":768, 
+    "dimension":512, 
     "n_q":1, 
     "bins":1024,
-    "in_channels":768,
+    "in_channels":100,
     "out_channels":100
   },
   "dataloader":

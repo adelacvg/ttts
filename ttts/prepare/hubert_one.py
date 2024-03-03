@@ -12,8 +12,8 @@ cnhubert.cnhubert_base_path = '/home/hyc/tortoise_plus_zh/ttts/pretrained_models
 hmodel=cnhubert.get_model().to(device)
 def process_one(file_path):
     hubert_path = file_path + ".hubert.pt"
-    # if os.path.exists(hubert_path):
-    #     return
+    if os.path.exists(hubert_path):
+        return
     # sound = AudioSegment.from_file(file_path)
     # sound = sound.set_frame_rate(16000)
     # sound = sound.set_channels(1)

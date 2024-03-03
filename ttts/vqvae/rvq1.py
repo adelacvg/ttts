@@ -85,10 +85,13 @@ class RVQ1(nn.Module):
         quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 4), mode="nearest")
         quantized = quantized + ref.unsqueeze(-1)
         recon = self.dec(quantized)
+        # print(mel.shape, recon.shape)
         recon_loss = F.mse_loss(mel, recon, reduction="mean")
         return recon_loss, commit_loss, recon
-    def decode(self, code):
-        quantized = self.quantizer.decode(codes)
+    def decode(self, code, mel):
+        ref = self.ref_proj(mel)
+        ref = self.ref_enc(ref)
+        quantized = self.quantizer.decode(code.unsqueeze(1))
         quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 4), mode="nearest")
         quantized = quantized + ref.unsqueeze(-1)
         out = self.dec(quantized)

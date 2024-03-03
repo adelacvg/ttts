@@ -5,9 +5,8 @@ import numpy as np
 from ttts.utils import vc_utils
 
 MODELS = {
-    'vqvae.pth':'/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-02-27-12-40-29/model-26.pt',
-    # 'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2023-12-24-14-22-14/model-70.pt',
-    'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-02-28-09-01-13/model-9.pt',
+    'vqvae.pth':'/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-02-14-43-14/model-42.pt',
+    'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-03-02-15-38-49/model-92.pt',
     'clvp2.pth': '',
     'diffusion.pth': '/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-02-24-11-42-36/model-57.pt',
     'vocoder.pth': '~/tortoise_plus_zh/ttts/pretrained_models/pytorch_model.bin',
@@ -24,8 +23,7 @@ cond_audio = 'ttts/6.wav'
 cond_text = "这是县交警队的一个小据点。"
 
 device = 'cuda:0'
-text = "这是县交警队的一个小据点。"
-# text = "大家好，今天来点大家想看的东西。"
+text = "大家好，今天来点大家想看的东西。"
 # text = "霞浦县衙城镇乌旗瓦窑村水位猛涨。"
 # text = '高德官方网站，拥有全面、精准的地点信息，公交驾车路线规划，特色语音导航，商家团购、优惠信息。'
 # text = '四是四，十是十，十四是十四，四十是四十。'
@@ -39,26 +37,27 @@ text_tokens = torch.IntTensor(tokenizer.encode(pinyin)).unsqueeze(0).to(device)
 text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
 text_tokens = text_tokens.to(device)
 print(pinyin)
-# print(text_tokens)
 from ttts.utils.infer_utils import load_model
 from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
 import torchaudio
+from ttts.utils import cnhubert
+import torchaudio.functional as F
 # device = 'gpu:0'
 gpt = load_model('gpt',MODELS['gpt.pth'],'ttts/gpt/config.json',device)
 gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=False, half=False)
-# diffusion = load_model('diffusion',MODELS['diffusion.pth'],'ttts/diffusion/config.json',device)
-sound = AudioSegment.from_file(cond_audio)
-sound = sound.set_frame_rate(16000)
-sound = sound.set_channels(1)
-samples = np.frombuffer(sound.raw_data, np.int16).flatten().astype(np.float32) / 32768.0
-wav16k = torch.from_numpy(samples).unsqueeze(0)
-wav16k = wav16k.to(device)
-hmodel = vc_utils.get_hubert_model().to(device)
-c = vc_utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
-c = c.to(device)
+# cnhubert.cnhubert_base_path = '/home/hyc/tortoise_plus_zh/ttts/pretrained_models/chinese-hubert-base'
+# hmodel=cnhubert.get_model().to(device)
+wav, sr = torchaudio.load(cond_audio)
+if wav.shape[0] > 1:  # mix to mono
+    wav = wav.mean(dim=0, keepdim=True)
+wav24k = F.resample(wav, sr, 24000)
+wav24k = wav24k.to(device)
+mel_extractor = MelSpectrogramFeatures().to(device)
+cond_mel =  mel_extractor(wav24k)
+# c = hmodel.model(wav16k)["last_hidden_state"].transpose(1,2)
+cond_mel = cond_mel.to(device)
 vqvae = load_model('vqvae', MODELS['vqvae.pth'], 'ttts/vqvae/config.json', device)
-cond_melvq = vqvae.get_codebook_indices(c)
-print(text_tokens)
+cond_melvq = vqvae.extract_code(cond_mel).squeeze(0)
 print(cond_melvq)
 settings = {'temperature': .8, 'length_penalty': 1.0, 'repetition_penalty': 2.0,
                     'top_p': .8,
@@ -68,7 +67,9 @@ temperature = .8
 autoregressive_batch_size = 1
 length_penalty = 2.0
 repetition_penalty = 2.0
-max_mel_tokens = 600
+max_mel_tokens = 1000
+print(text_tokens)
+print(cond_melvq)
 # text_tokens = F.pad(text_tokens,(0,400-text_tokens.shape[1]),value=0)
 codes = gpt.inference_speech(text_tokens,
                                 cond_melvq,
@@ -76,7 +77,9 @@ codes = gpt.inference_speech(text_tokens,
                                 top_p=top_p,
                                 temperature=temperature,
                                 num_return_sequences=autoregressive_batch_size,
-                                # length_penalty=length_penalty,
+                                length_penalty=length_penalty,
                                 repetition_penalty=repetition_penalty,
                                 max_generate_length=max_mel_tokens)
 print(codes)
+mel = vqvae.decode(codes[:,:-1], cond_mel)[0]
+mel.shape

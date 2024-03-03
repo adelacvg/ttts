@@ -11,7 +11,7 @@
     "accumulate_num":1
   },
   "dataset": {
-    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/small_data.jsonl"
+    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/data_temp.jsonl"
   },
   "gpt":{
     "model_dim":512,
@@ -25,8 +25,7 @@
     "start_mel_token":1024,
     "stop_mel_token":1025,
     "start_text_token":255,
-    "train_solo_embeddings":false,
-    "use_perceiver":false
+    "train_solo_embeddings":false
   },
   "dataloader":
   {

@@ -91,11 +91,10 @@ class Trainer(object):
                 # with torch.autograd.detect_anomaly():
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dataloader)
-                    mel, hubert = data['mel'],data['hubert']
+                    mel = data['mel']
                     mel = mel.to(device).squeeze(1)
-                    hubert = hubert.to(device).squeeze(1)
                     with self.accelerator.autocast():
-                        recon_loss, commitment_loss, mel_recon = self.vqvae(hubert, mel)
+                        recon_loss, commitment_loss, mel_recon = self.vqvae(mel, mel)
                         loss = recon_loss+0.25*commitment_loss
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
@@ -116,7 +115,7 @@ class Trainer(object):
                         eval_model = self.accelerator.unwrap_model(self.vqvae)
                         eval_model.eval()
                         # mel_recon_ema = self.ema_model.infer(mel)[0]
-                        _, _, mel_recon_eval = eval_model(hubert, mel)
+                        _, _, mel_recon_eval = eval_model(mel, mel)
                         eval_model.train()
                     scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm}
                     image_dict = {
@@ -142,5 +141,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('~/tortoise_plus_zh/ttts/vqvae/logs/2023-11-04-00-25-39/model-14.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-02-06-25-24/model-1.pt')
     trainer.train()
