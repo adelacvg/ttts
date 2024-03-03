@@ -102,7 +102,7 @@ class Trainer(object):
                         continue
                     # speech_conditioning_latent, text_inputs, text_lengths, mel_codes, wav_lengths
                     input_params = [data['padded_text'], data['text_lengths'],
-                        data['padded_qmel'], data['wav_lens'], data['qmel_lengths']]
+                        data['padded_qmel'], data['wav_lens']]
                     input_params = [d.to(device) for d in input_params]
                     with self.accelerator.autocast():
                         loss_text, loss_mel, mel_logits = self.gpt(*input_params)

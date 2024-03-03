@@ -57,12 +57,10 @@ class GptTtsDataset(torch.utils.data.Dataset):
             text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
             text = self.tok.encode(text)
             text = LongTensor(text)
-            text = torch.cat((text,text),0)
 
             # Fetch quantized MELs
             quant_path = audiopath + '.vq.pth'
             qmel = LongTensor(torch.load(quant_path))
-            qmel = torch.cat((qmel,qmel),0)
 
             # mel_raw_path = audiopath + '.mel.pth'
             # mel_raw = torch.load(mel_raw_path)[0]

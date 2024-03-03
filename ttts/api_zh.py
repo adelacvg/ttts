@@ -6,7 +6,7 @@ from ttts.utils import vc_utils
 
 MODELS = {
     'vqvae.pth':'/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-02-14-43-14/model-42.pt',
-    'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-03-02-15-38-49/model-92.pt',
+    'gpt.pth': '/home/hyc/tortoise_plus_zh/ttts/gpt/logs/2024-03-03-11-05-07/model-7.pt',
     'clvp2.pth': '',
     'diffusion.pth': '/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-02-24-11-42-36/model-57.pt',
     'vocoder.pth': '~/tortoise_plus_zh/ttts/pretrained_models/pytorch_model.bin',
@@ -15,14 +15,18 @@ MODELS = {
 }
 from ttts.gpt.voice_tokenizer import VoiceBpeTokenizer
 import torch.nn.functional as F
-cond_audio = 'ttts/6.wav'
+cond_audio = 'ttts/8.wav'
 # cond_text = "霞浦县衙城镇乌旗瓦窑村水位猛涨。"
 # cond_text = "现场都是人，五辆警车好不容易找到位置停下。"
 # cond_text = "除了曾经让全人类都畏惧的麻疹和天花之外，传染率"
 # cond_text = "开始步行导航，今天我也是没有迟到哦。"
-cond_text = "这是县交警队的一个小据点。"
+# cond_text = "这是县交警队的一个小据点。"
+# cond_text = "没什么，没什么，只是平时他总是站在这里，有点奇怪而已。"
+cond_text = "没错没错，就是这样。"
 
 device = 'cuda:0'
+# text = "没错没错，就是这样。"
+# text = "没什么，没什么，只是平时他总是站在这里，有点奇怪而已。"
 text = "大家好，今天来点大家想看的东西。"
 # text = "霞浦县衙城镇乌旗瓦窑村水位猛涨。"
 # text = '高德官方网站，拥有全面、精准的地点信息，公交驾车路线规划，特色语音导航，商家团购、优惠信息。'
@@ -37,6 +41,7 @@ text_tokens = torch.IntTensor(tokenizer.encode(pinyin)).unsqueeze(0).to(device)
 text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
 text_tokens = text_tokens.to(device)
 print(pinyin)
+print(text_tokens)
 from ttts.utils.infer_utils import load_model
 from ttts.vocoder.feature_extractors import MelSpectrogramFeatures
 import torchaudio
@@ -54,7 +59,6 @@ wav24k = F.resample(wav, sr, 24000)
 wav24k = wav24k.to(device)
 mel_extractor = MelSpectrogramFeatures().to(device)
 cond_mel =  mel_extractor(wav24k)
-# c = hmodel.model(wav16k)["last_hidden_state"].transpose(1,2)
 cond_mel = cond_mel.to(device)
 vqvae = load_model('vqvae', MODELS['vqvae.pth'], 'ttts/vqvae/config.json', device)
 cond_melvq = vqvae.extract_code(cond_mel).squeeze(0)
@@ -81,5 +85,3 @@ codes = gpt.inference_speech(text_tokens,
                                 repetition_penalty=repetition_penalty,
                                 max_generate_length=max_mel_tokens)
 print(codes)
-mel = vqvae.decode(codes[:,:-1], cond_mel)[0]
-mel.shape

@@ -544,6 +544,7 @@ class UnifiedVoice(nn.Module):
         fake_inputs = torch.full((emb.shape[0], emb.shape[1]+mel_codes.shape[-1],), fill_value=1, dtype=torch.long,
                                  device=text_inputs.device)
         # fake_inputs[:, -1] = self.start_mel_token
+        fake_inputs[:,-mel_codes.shape[1]:] = mel_codes
         trunc_index = fake_inputs.shape[1]
         if input_tokens is None:
             inputs = fake_inputs
