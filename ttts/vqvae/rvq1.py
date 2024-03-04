@@ -9,7 +9,7 @@ import torchaudio
 from einops import rearrange, repeat
 from einops import rearrange
 from ttts.utils.utils import normalization, AttentionBlock
-from ttts.diffusion.mrte import MultiHeadAttention
+from ttts.utils.vc_utils import MultiHeadAttention
 from ttts.diffusion.ldm.modules.diffusionmodules.util import (
     conv_nd,
     linear,
@@ -58,36 +58,45 @@ class RVQ1(nn.Module):
                 dimension=1024, 
                 n_q=1, 
                 bins=1024,
-                in_channels=768,
-                out_channels=100,
+                mel_channels=768,
+                hubert_channels=100,
                 num_heads=8,
                 ):
         super().__init__()
         self.quantizer = ResidualVectorQuantizer(dimension=dimension, n_q=n_q, bins=bins)
+        self.semantic_enc = nn.Sequential(
+            nn.Conv1d(mel_channels, hubert_channels, kernel_size=3, padding=1),
+            AttentionBlock(hubert_channels, num_heads, relative_pos_embeddings=True),
+            nn.Conv1d(hubert_channels, hubert_channels, kernel_size=3, padding=1),
+            AttentionBlock(hubert_channels, num_heads, relative_pos_embeddings=True),
+        )
         self.enc = nn.Sequential(
-            nn.Conv1d(in_channels, dimension, kernel_size=3, stride=2, padding=1),
+            nn.Conv1d(hubert_channels, dimension, kernel_size=3, stride=2, padding=1),
             AttentionBlock(dimension, num_heads, relative_pos_embeddings=True),
             nn.Conv1d(dimension, dimension, kernel_size=3, stride=2, padding=1),
         )
-        self.ref_proj = nn.Conv1d(out_channels, dimension, 1)
+        self.ref_proj = nn.Conv1d(mel_channels, dimension, 1)
         self.ref_enc = RefEncoder(dimension,dimension)
         self.dec = nn.Sequential(
             AttentionBlock(dimension, num_heads, relative_pos_embeddings=True),
+            nn.Conv1d(dimension, dimension, kernel_size=3, padding=1),
             AttentionBlock(dimension, num_heads, relative_pos_embeddings=True),
+            nn.Conv1d(dimension, dimension, kernel_size=3, padding=1),
             AttentionBlock(dimension, num_heads, relative_pos_embeddings=True),
-            nn.Conv1d(dimension, out_channels, kernel_size=1),
+            nn.Conv1d(dimension, mel_channels, kernel_size=1),
         )
-    def forward(self, ssl, mel):
+    def forward(self, mel, hubert):
         ref = self.ref_proj(mel)
         ref = self.ref_enc(ref)
-        ssl = self.enc(ssl)
-        quantized, codes, commit_loss, quantized_list = self.quantizer(ssl, layers=[0])
+        x = self.semantic_enc(mel)
+        semantic_loss = F.mse_loss(x, hubert.detach(), reduction="mean")
+        x = self.enc(x)
+        quantized, codes, commit_loss, quantized_list = self.quantizer(x, layers=[0])
         quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 4), mode="nearest")
         quantized = quantized + ref.unsqueeze(-1)
         recon = self.dec(quantized)
-        # print(mel.shape, recon.shape)
         recon_loss = F.mse_loss(mel, recon, reduction="mean")
-        return recon_loss, commit_loss, recon
+        return recon_loss, commit_loss, semantic_loss, recon
     def decode(self, code, mel):
         ref = self.ref_proj(mel)
         ref = self.ref_enc(ref)
@@ -96,7 +105,10 @@ class RVQ1(nn.Module):
         quantized = quantized + ref.unsqueeze(-1)
         out = self.dec(quantized)
         return out
-    def extract_code(self, x):
-        ssl = self.enc(x)
-        quantized, codes, commit_loss, quantized_list = self.quantizer(ssl,layers=[0])
+    def extract_code(self, mel):
+        ref = self.ref_proj(mel)
+        ref = self.ref_enc(ref)
+        x = self.semantic_enc(mel)
+        x = self.enc(x)
+        quantized, codes, commit_loss, quantized_list = self.quantizer(x, layers=[0])
         return codes.transpose(0, 1)

@@ -92,10 +92,12 @@ class Trainer(object):
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dataloader)
                     mel = data['mel']
+                    hubert = data['hubert']
                     mel = mel.to(device).squeeze(1)
+                    hubert = hubert.to(device).squeeze(1)
                     with self.accelerator.autocast():
-                        recon_loss, commitment_loss, mel_recon = self.vqvae(mel, mel)
-                        loss = recon_loss+0.25*commitment_loss
+                        recon_loss, commitment_loss, semantic_loss, mel_recon = self.vqvae(mel, hubert)
+                        loss = recon_loss+0.25*commitment_loss+semantic_loss
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -115,9 +117,9 @@ class Trainer(object):
                         eval_model = self.accelerator.unwrap_model(self.vqvae)
                         eval_model.eval()
                         # mel_recon_ema = self.ema_model.infer(mel)[0]
-                        _, _, mel_recon_eval = eval_model(mel, mel)
+                        _, _, _, mel_recon_eval = eval_model(mel, hubert)
                         eval_model.train()
-                    scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm}
+                    scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm, "loss_semantic":semantic_loss}
                     image_dict = {
                         "all/spec": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                         "all/spec_pred": plot_spectrogram_to_numpy(mel_recon[0, :, :].detach().unsqueeze(-1).cpu()),
@@ -141,5 +143,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-02-06-25-24/model-1.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-03-16-57-59/model-9.pt')
     trainer.train()

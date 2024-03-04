@@ -427,7 +427,7 @@ class UnifiedVoice(nn.Module):
         enc = self.final_norm(enc)
 
         if return_latent:
-            return enc[:, speech_conditioning_inputs.shape[1]:speech_conditioning_inputs.shape[1]+first_inputs.shape[1]], enc[:, -second_inputs.shape[1]:]
+            return enc[:, :first_inputs.shape[1]], enc[:, -second_inputs.shape[1]:]
 
         first_logits = enc[:, :first_inputs.shape[1]]
         first_logits = first_head(first_logits)

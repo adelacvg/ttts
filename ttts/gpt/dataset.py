@@ -27,22 +27,6 @@ def write_jsonl(path, all_paths):
             json.dump(item, file, ensure_ascii=False)
             file.write('\n')
 
-def find_and_randomly_select_mel_files(wav_file):
-    # 获取.wav文件所在文件夹路径
-    wav_folder = os.path.dirname(wav_file)
-
-    # 找到相同路径下的所有以.mel.pth结尾的文件
-    mel_files = [f for f in os.listdir(wav_folder) if f.endswith('.mel.pth')]
-
-    if mel_files:
-        # 随机选择一个.mel.pth文件
-        selected_mel_file = random.choice(mel_files)
-
-        # 返回完整路径
-        selected_mel_file_path = os.path.join(wav_folder, selected_mel_file)
-        return selected_mel_file_path
-    else:
-        print("未找到以.mel.pth结尾的文件")
 class GptTtsDataset(torch.utils.data.Dataset):
     def __init__(self, opt):
         self.tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')

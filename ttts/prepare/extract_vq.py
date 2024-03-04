@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 import os
 
-model_path = '/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-02-14-43-14/model-42.pt'
+model_path = '/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-04-09-54-02/model-95.pt'
 vqvae = load_model('vqvae', model_path, 'ttts/vqvae/config.json', 'cuda')
 def process_vq(path):
     cvec_path = path + ".mel.pth"

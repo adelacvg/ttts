@@ -11,7 +11,7 @@
     "accumulate_num":1
   },
   "dataset": {
-    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/data_temp.jsonl"
+    "path":"/home/hyc/tortoise_plus_zh/ttts/datasets/hq_data.jsonl"
   },
   "gpt":{
     "model_dim":512,

@@ -17,8 +17,8 @@
     "dimension":512, 
     "n_q":1, 
     "bins":1024,
-    "in_channels":100,
-    "out_channels":100
+    "mel_channels":100,
+    "hubert_channels":768
   },
   "dataloader":
   {
