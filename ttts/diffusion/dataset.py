@@ -46,8 +46,8 @@ class DiffusionDataset(torch.utils.data.Dataset):
             mel_path = audiopath + '.mel.pth'
             mel_raw = torch.load(mel_path)[0]
 
-            quant_path = audiopath + '.melvq.pth'
-            mel_codes = LongTensor(torch.load(quant_path)[0])
+            quant_path = audiopath + '.vq.pth'
+            mel_codes = LongTensor(torch.load(quant_path))
         except:
             return None
 

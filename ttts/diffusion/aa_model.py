@@ -231,7 +231,7 @@ class BaseModel(nn.Module):
             nn.SiLU(),
             zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
         )
-        self.hint_converter = nn.Conv1d(1024,model_channels,3,padding=1)
+        self.hint_converter = nn.Conv1d(context_dim,model_channels,3,padding=1)
 
     def convert_to_fp16(self):
         """
@@ -318,7 +318,7 @@ class AA_diffusion(nn.Module):
         # self.refer_model = instantiate_from_config(refer_config)
         self.control_scales = [1.0] * 13
         # self.unconditioned_embedding = nn.Parameter(torch.randn(1,100,1))
-        self.unconditioned_cat_embedding = nn.Parameter(torch.randn(1,1024,1))
+        self.unconditioned_cat_embedding = nn.Parameter(torch.randn(1,config['base_diffusion']['context_dim'],1))
     def get_uncond_batch(self, code_emb):
         unconditioned_batches = torch.zeros((code_emb.shape[0], 1, 1), device=code_emb.device)
         # Mask out the conditioning branch for whole batch elements, implementing something similar to classifier-free guidance.

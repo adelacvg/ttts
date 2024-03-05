@@ -24,7 +24,6 @@ class MRTE(nn.Module):
             nn.Conv1d(mel_channels, model_channels, 3, padding=1),
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
         )
         self.text_pre = nn.Sequential(
             nn.Conv1d(semantic_channels, model_channels, 1),
@@ -32,9 +31,11 @@ class MRTE(nn.Module):
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
         )
         self.c_post = nn.Conv1d(model_channels, semantic_channels, 1)
-        self.ge_enc = RefEncoder(mel_channels,model_channels)
+        self.ge_enc = nn.Sequential(
+            nn.Conv1d(mel_channels, model_channels, kernel_size=3, padding=1),
+            RefEncoder(model_channels,model_channels)
+            )
         self.post_enc = nn.Sequential(
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
         )
@@ -42,7 +43,6 @@ class MRTE(nn.Module):
 
     def forward(self, refer, text):
         ge = self.ge_enc(refer)
-        ge = torch.mean(ge, dim=-1)
         mel = self.mel_enc(refer)
         text = self.text_pre(text)
         x = (

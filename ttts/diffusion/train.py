@@ -159,7 +159,7 @@ class Trainer(object):
                         continue
                         
                     with torch.no_grad():
-                        latent = self.gpt(data['padded_mel_refer'], data['padded_text'],
+                        latent = self.gpt(data['padded_text'],
                             torch.tensor([data['padded_text'].shape[-1]], device=device), data['padded_mel_code'],
                             torch.tensor([data['padded_mel_code'].shape[-1]*self.mel_length_compression], device=device),
                             return_latent=True, clip_inputs=False).transpose(1,2)
@@ -218,7 +218,7 @@ class Trainer(object):
 
                     text_padded, mel_code_padded, refer_padded = text_padded.to(device), mel_code_padded.to(device), refer_padded.to(device)
                     with torch.no_grad():
-                        latent = self.gpt(refer_padded, text_padded,
+                        latent = self.gpt(text_padded,
                             torch.tensor([text_padded.shape[-1]], device=device), mel_code_padded,
                             torch.tensor([mel_code_padded.shape[-1]*self.mel_length_compression], device=device),
                             return_latent=True, clip_inputs=False).transpose(1,2)
@@ -258,5 +258,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-02-26-03-08-49/model-60.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/diffusion/logs/2024-02-26-03-08-49/model-60.pt')
     trainer.train()
