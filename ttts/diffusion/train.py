@@ -33,7 +33,7 @@ from ttts.utils.diffusion import space_timesteps, SpacedDiffusion
 # from ttts.diffusion.diffusion_util import Diffuser
 # from accelerate import DistributedDataParallelKwargs
 
-def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_latents, temperature=1, verbose=True):
+def do_spectrogram_diffusion(diffusion_model, diffuser, latents, refer, temperature=1, verbose=True):
     """
     Uses the specified diffusion model to convert discrete codes into a spectrogram.
     """
@@ -44,8 +44,8 @@ def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_la
         noise = torch.randn(output_shape, device=latents.device) * temperature
         mel = diffuser.p_sample_loop(diffusion_model, output_shape, noise=noise,
                                     model_kwargs= {
-                                    "hint": latents,
-                                    "refer": conditioning_latents
+                                    "latent": latents,
+                                    "refer": refer 
                                     },
                                     progress=verbose)
         return denormalize_tacotron_mel(mel)[:,:,:output_seq_len]
@@ -98,7 +98,7 @@ class Trainer(object):
                            model_var_type='learned_range', loss_type='mse', betas=get_named_beta_schedule('linear', trained_diffusion_steps),
                            conditioning_free=True, conditioning_free_k=cond_free_k, sampler='dpm++2m')
         # self.diffusion = DiffusionTts(**self.cfg['diffusion'])
-        self.diffusion = AA_diffusion(self.cfg)
+        self.diffusion = AA_diffusion(**self.cfg['aa_diffusion'])
         print("model params:", count_parameters(self.diffusion))
         self.dataset = DiffusionDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'], collate_fn=DiffusionCollater())
@@ -166,8 +166,7 @@ class Trainer(object):
 
                     # mel_recon_padded, mel_padded, mel_lengths, refer_padded, refer_lengths
                     x_start = normalize_tacotron_mel(data['padded_mel'].to(device))
-                    aligned_conditioning = latent 
-                    conditioning_latent = normalize_tacotron_mel(data['padded_mel_refer'].to(device))
+                    refer = normalize_tacotron_mel(data['padded_mel_refer'].to(device))
                     t = torch.randint(0, self.desired_diffusion_steps, (x_start.shape[0],), device=device).long().to(device)
                     with self.accelerator.autocast():
                         loss = self.diffuser.training_losses( 
@@ -175,16 +174,17 @@ class Trainer(object):
                             x_start = x_start,
                             t = t,
                             model_kwargs = {
-                                "hint": aligned_conditioning,
-                                "refer": conditioning_latent
+                                "latent": latent,
+                                "refer": refer 
                             },
                             )["loss"].mean()
                         unused_params =[]
                         model = self.accelerator.unwrap_model(self.diffusion)
-                        unused_params.extend(list(model.refer_model.blocks.parameters()))
+                        unused_params.extend(list(model.refer_model.layers.parameters()))
                         unused_params.extend(list(model.refer_model.out.parameters()))
-                        unused_params.extend(list(model.refer_model.hint_converter.parameters()))
-                        unused_params.extend(list(model.refer_enc.visual.proj))
+                        # unused_params.extend(list(model.refer_model.out.parameters()))
+                        # unused_params.extend(list(model.refer_model.hint_converter.parameters()))
+                        # unused_params.extend(list(model.refer_enc.visual.proj))
                         extraneous_addition = 0
                         for p in unused_params:
                             extraneous_addition = extraneous_addition + p.mean()

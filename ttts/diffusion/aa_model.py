@@ -1,324 +1,239 @@
-from ttts.diffusion.ldm.modules.diffusionmodules.util import (
-    conv_nd,
-    linear,
-    normalization,
-    zero_module,
-    timestep_embedding,
-)
-from ttts.diffusion.ldm.modules.attention import SpatialTransformer
-from ttts.diffusion.ldm.modules.diffusionmodules.openaimodel import TimestepEmbedSequential, ResBlock, Downsample, AttentionBlock, Upsample, convert_module_to_f16, convert_module_to_f32
-from ttts.diffusion.ldm.util import exists
 from ttts.diffusion.mrte import MRTE
 import torch as th
 from einops import rearrange, repeat
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from abc import abstractmethod
 from torch import autocast
-from ttts.diffusion.cldm.cond_emb import CLIP
+import math
 
 from ttts.utils.utils import normalization, AttentionBlock
+
+def is_latent(t):
+    return t.dtype == torch.float
+
+
+def is_sequence(t):
+    return t.dtype == torch.long
+
+
+def timestep_embedding(timesteps, dim, max_period=10000):
+    """
+    Create sinusoidal timestep embeddings.
+
+    :param timesteps: a 1-D Tensor of N indices, one per batch element.
+                      These may be fractional.
+    :param dim: the dimension of the output.
+    :param max_period: controls the minimum frequency of the embeddings.
+    :return: an [N x dim] Tensor of positional embeddings.
+    """
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+    ).to(device=timesteps.device)
+    args = timesteps[:, None].float() * freqs[None]
+    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    return embedding
+
+
+class TimestepBlock(nn.Module):
+    @abstractmethod
+    def forward(self, x, emb):
+        """
+        Apply the module to `x` given `emb` timestep embeddings.
+        """
+
+
+class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
+    def forward(self, x, emb):
+        for layer in self:
+            if isinstance(layer, TimestepBlock):
+                x = layer(x, emb)
+            else:
+                x = layer(x)
+        return x
+
+
+class ResBlock(TimestepBlock):
+    def __init__(
+        self,
+        channels,
+        emb_channels,
+        dropout,
+        out_channels=None,
+        dims=2,
+        kernel_size=3,
+        efficient_config=True,
+        use_scale_shift_norm=False,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.emb_channels = emb_channels
+        self.dropout = dropout
+        self.out_channels = out_channels or channels
+        self.use_scale_shift_norm = use_scale_shift_norm
+        padding = {1: 0, 3: 1, 5: 2}[kernel_size]
+        eff_kernel = 1 if efficient_config else 3
+        eff_padding = 0 if efficient_config else 1
+
+        self.in_layers = nn.Sequential(
+            normalization(channels),
+            nn.SiLU(),
+            nn.Conv1d(channels, self.out_channels, eff_kernel, padding=eff_padding),
+        )
+
+        self.emb_layers = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(
+                emb_channels,
+                2 * self.out_channels if use_scale_shift_norm else self.out_channels,
+            ),
+        )
+        self.out_layers = nn.Sequential(
+            normalization(self.out_channels),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+                nn.Conv1d(self.out_channels, self.out_channels, kernel_size, padding=padding),
+        )
+
+        if self.out_channels == channels:
+            self.skip_connection = nn.Identity()
+        else:
+            self.skip_connection = nn.Conv1d(channels, self.out_channels, eff_kernel, padding=eff_padding)
+
+    def forward(self, x, emb):
+        h = self.in_layers(x)
+        emb_out = self.emb_layers(emb).type(h.dtype)
+        while len(emb_out.shape) < len(h.shape):
+            emb_out = emb_out[..., None]
+        if self.use_scale_shift_norm:
+            out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+            scale, shift = torch.chunk(emb_out, 2, dim=1)
+            h = out_norm(h) * (1 + scale) + shift
+            h = out_rest(h)
+        else:
+            h = h + emb_out
+            h = self.out_layers(h)
+        return self.skip_connection(x) + h
+
+
+class DiffusionLayer(TimestepBlock):
+    def __init__(self, model_channels, dropout, num_heads):
+        super().__init__()
+        self.resblk = ResBlock(model_channels, model_channels, dropout, model_channels, dims=1, use_scale_shift_norm=True)
+        self.attn = AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True)
+
+    def forward(self, x, time_emb, refer=None):
+        y = self.resblk(x, time_emb)
+        if refer!=None:
+            y = torch.cat([y,refer],dim=-1)
+        y = self.attn(y)
+        if refer!=None:
+            y = y[:,:,:-refer.shape[-1]]
+        return y
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 class BaseModel(nn.Module):
-    """
-    The full UNet model with attention and timestep embedding.
-    :param in_channels: channels in the input Tensor.
-    :param model_channels: base channel count for the model.
-    :param out_channels: channels in the output Tensor.
-    :param num_res_blocks: number of residual blocks per downsample.
-    :param attention_resolutions: a collection of downsample rates at which
-        attention will take place. May be a set, list, or tuple.
-        For example, if this contains 4, then at 4x downsampling, attention
-        will be used.
-    :param dropout: the dropout probability.
-    :param channel_mult: channel multiplier for each level of the UNet.
-    :param conv_resample: if True, use learned convolutions for upsampling and
-        downsampling.
-    :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param num_classes: if specified (as an int), then this model will be
-        class-conditional with `num_classes` classes.
-    :param use_checkpoint: use gradient checkpointing to reduce memory usage.
-    :param num_heads: the number of attention heads in each attention layer.
-    :param num_heads_channels: if specified, ignore num_heads and instead use
-                               a fixed channel width per attention head.
-    :param num_heads_upsample: works with num_heads to set a different number
-                               of heads for upsampling. Deprecated.
-    :param use_scale_shift_norm: use a FiLM-like conditioning mechanism.
-    :param resblock_updown: use residual blocks for up/downsampling.
-    :param use_new_attention_order: use a different attention pattern for potentially
-                                    increased efficiency.
-    """
-
     def __init__(
         self,
-        in_channels,
         model_channels,
         out_channels,
-        num_res_blocks,
-        attention_resolutions,
-        dropout=0,
-        channel_mult=(1, 2, 4, 8),
-        conv_resample=True,
-        dims=1,
-        num_classes=None,
-        use_checkpoint=False,
-        use_fp16=False,
-        num_heads=-1,
-        num_head_channels=-1,
-        num_heads_upsample=-1,
-        use_scale_shift_norm=False,
-        resblock_updown=False,
-        use_new_attention_order=False,
-        use_spatial_transformer=False,    # custom transformer support
-        transformer_depth=1,              # custom transformer support
-        context_dim=None,                 # custom transformer support
-        n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
-        legacy=True,
-        disable_self_attentions=None,
-        num_attention_blocks=None,
-        disable_middle_self_attn=False,
-        use_linear_in_transformer=False,
+        num_layers,
+        num_heads=8,
+        dropout=0.1,
+        referencenet=False
     ):
         super().__init__()
-        if use_spatial_transformer:
-            assert context_dim is not None, 'Fool!! You forgot to include the dimension of your cross-attention conditioning...'
-
-        if context_dim is not None:
-            assert use_spatial_transformer, 'Fool!! You forgot to use the spatial transformer for your cross-attention conditioning...'
-            from omegaconf.listconfig import ListConfig
-            if type(context_dim) == ListConfig:
-                context_dim = list(context_dim)
-
-        if num_heads_upsample == -1:
-            num_heads_upsample = num_heads
-
-        if num_heads == -1:
-            assert num_head_channels != -1, 'Either num_heads or num_head_channels has to be set'
-
-        if num_head_channels == -1:
-            assert num_heads != -1, 'Either num_heads or num_head_channels has to be set'
-
-        self.in_channels = in_channels
-        self.model_channels = model_channels
-        self.out_channels = out_channels
-        if isinstance(num_res_blocks, int):
-            self.num_res_blocks = len(channel_mult) * [num_res_blocks]
+        if referencenet==False:
+            self.layers = nn.ModuleList([DiffusionLayer(model_channels, dropout, num_heads) for _ in range(num_layers)] +
+                                    [ResBlock(model_channels, model_channels, dropout, dims=1, use_scale_shift_norm=True) for _ in range(3)])
         else:
-            if len(num_res_blocks) != len(channel_mult):
-                raise ValueError("provide num_res_blocks either as an int (globally constant) or "
-                                 "as a list/tuple (per-level) with the same length as channel_mult")
-            self.num_res_blocks = num_res_blocks
-        if disable_self_attentions is not None:
-            # should be a list of booleans, indicating whether to disable self-attention in TransformerBlocks or not
-            assert len(disable_self_attentions) == len(channel_mult)
-        if num_attention_blocks is not None:
-            assert len(num_attention_blocks) == len(self.num_res_blocks)
-            assert all(map(lambda i: self.num_res_blocks[i] >= num_attention_blocks[i], range(len(num_attention_blocks))))
-            print(f"Constructor of UNetModel received num_attention_blocks={num_attention_blocks}. "
-                  f"This option has LESS priority than attention_resolutions {attention_resolutions}, "
-                  f"i.e., in cases where num_attention_blocks[i] > 0 but 2**i not in attention_resolutions, "
-                  f"attention will still not be set.")
-
-        self.attention_resolutions = attention_resolutions
-        self.dropout = dropout
-        self.channel_mult = channel_mult
-        self.conv_resample = conv_resample
-        self.num_classes = num_classes
-        self.use_checkpoint = use_checkpoint
-        self.dtype = th.float16 if use_fp16 else th.float32
-        self.num_heads = num_heads
-        self.num_head_channels = num_head_channels
-        self.num_heads_upsample = num_heads_upsample
-        self.predict_codebook_ids = n_embed is not None
-
-        time_embed_dim = model_channels * 4
-        self.time_embed = nn.Sequential(
-            linear(model_channels, time_embed_dim),
-            nn.SiLU(),
-            linear(time_embed_dim, time_embed_dim),
-        )
-
-        if self.num_classes is not None:
-            if isinstance(self.num_classes, int):
-                self.label_emb = nn.Embedding(num_classes, time_embed_dim)
-            elif self.num_classes == "continuous":
-                print("setting up linear c_adm embedding layer")
-                self.label_emb = nn.Linear(1, time_embed_dim)
-            else:
-                raise ValueError()
-
-        self.blocks = nn.ModuleList(
-            [
-                TimestepEmbedSequential(
-                    conv_nd(dims, in_channels, model_channels, 3, padding=1)
-                )
-            ]
-        )
-        self._feature_size = model_channels
-        input_block_chans = [model_channels]
-        ch = model_channels
-        ds = 1
-        for level, mult in enumerate(channel_mult):
-            for nr in range(self.num_res_blocks[level]):
-                layers = [
-                    ResBlock(
-                        ch,
-                        time_embed_dim,
-                        dropout,
-                        out_channels=mult * model_channels,
-                        dims=dims,
-                        use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                    )
-                ]
-                ch = mult * model_channels
-                if ds in attention_resolutions:
-                    if num_head_channels == -1:
-                        dim_head = ch // num_heads
-                    else:
-                        num_heads = ch // num_head_channels
-                        dim_head = num_head_channels
-                    if legacy:
-                        #num_heads = 1
-                        dim_head = ch // num_heads if use_spatial_transformer else num_head_channels
-                    if exists(disable_self_attentions):
-                        disabled_sa = disable_self_attentions[level]
-                    else:
-                        disabled_sa = False
-
-                    if not exists(num_attention_blocks) or nr < num_attention_blocks[level]:
-                        layers.append(
-                            AttentionBlock(
-                                ch,
-                                use_checkpoint=use_checkpoint,
-                                num_heads=num_heads,
-                                num_head_channels=dim_head,
-                                use_new_attention_order=use_new_attention_order,
-                            ) if not use_spatial_transformer else SpatialTransformer(
-                                ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,
-                                disable_self_attn=disabled_sa, use_linear=use_linear_in_transformer,
-                                use_checkpoint=use_checkpoint
-                            )
-                        )
-                self.blocks.append(TimestepEmbedSequential(*layers))
-                self._feature_size += ch
-                input_block_chans.append(ch)
-            # if level != len(channel_mult) - 1:
-            out_ch = ch
-            self.blocks.append(
-                TimestepEmbedSequential(
-                    ResBlock(
-                        ch,
-                        time_embed_dim,
-                        dropout,
-                        out_channels=out_ch,
-                        dims=dims,
-                        use_checkpoint=use_checkpoint,
-                        use_scale_shift_norm=use_scale_shift_norm,
-                    )
-                )
-            )
-            ch = out_ch
-            input_block_chans.append(ch)
-            # ds *= 2
-            self._feature_size += ch
-
+            self.layers = nn.ModuleList([DiffusionLayer(model_channels, dropout, num_heads) for _ in range(num_layers)])
         self.out = nn.Sequential(
-            normalization(ch),
+            normalization(model_channels),
             nn.SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
+            nn.Conv1d(model_channels, out_channels, 3, padding=1),
         )
-        self.hint_converter = nn.Conv1d(context_dim,model_channels,3,padding=1)
-
-    def convert_to_fp16(self):
-        """
-        Convert the torso of the model to float16.
-        """
-        self.blocks.apply(convert_module_to_f16)
-        # self.input_blocks.apply(convert_module_to_f16)
-        # self.middle_block.apply(convert_module_to_f16)
-        # self.output_blocks.apply(convert_module_to_f16)
-
-    def convert_to_fp32(self):
-        """
-        Convert the torso of the model to float32.
-        """
-        self.blocks.apply(convert_module_to_f32)
-        # self.input_blocks.apply(convert_module_to_f32)
-        # self.middle_block.apply(convert_module_to_f32)
-        # self.output_blocks.apply(convert_module_to_f32)
-
-    def forward(self, x, timesteps=None, context=None, hint=None, control=None,  **kwargs):
-        hs = []
-        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
-        emb = self.time_embed(t_emb)
-        # guided_hint = self.input_hint_block(hint, emb, context)
-        hint = self.hint_converter(hint)
-        # context = self.context_proj(context).unsqueeze(-1)
-        # scale, shift = torch.chunk(context, 2, dim = 1)
-        # hint = hint*(1+scale)+shift
-        h = x.type(self.dtype)
-        flag=0
-        for module in self.blocks:
-            if flag==0:
-                h = module(h, emb, context, control.pop(0))
-                h += hint
-                flag=1
+    def forward(self, x, time_emb=None, latent=None, refers=None,  **kwargs):
+        for i, lyr in enumerate(self.layers):
+            if i<len(self.layers)-3:
+                refer = refers.pop(0)
+                x = lyr(x, time_emb, refer=refer)
             else:
-                h = module(h, emb, context, control.pop(0))
-            hs.append(h)
-        h = h.type(x.dtype)
-        return self.out(h)
+                x = lyr(x, time_emb)
+
+        out = self.out(x)
+        return out
 
 class ReferenceNet(BaseModel):
-    def forward(self, x, timesteps=None, context=None, **kwargs):
-        hs = []
-        control = []
-        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
-        emb = self.time_embed(t_emb)
-        h = x.type(self.dtype)
-        for module in self.blocks:
-            h,refer = module(h, emb, context,return_refer=True)
-            hs.append(h)
-            control.append(refer)
-        h = h.type(x.dtype)
-        # h = self.out(h)
-        return control
+    def forward(self, x, time_emb=None, **kwargs):
+        refers = []
+        for i, lyr in enumerate(self.layers):
+            refers.append(x)
+            x = lyr(x, time_emb)
+
+        return refers
 
 TACOTRON_MEL_MAX = 5.5451774444795624753378569716654
 TACOTRON_MEL_MIN = -16.118095650958319788125940182791
 # TACOTRON_MEL_MIN = -11.512925464970228420089957273422
-
-CVEC_MAX = 5.5451774444795624753378569716654
-CVEC_MIN = -5.5451774444795624753378569716654
 def denormalize_tacotron_mel(norm_mel):
     return norm_mel/0.18215
 def normalize_tacotron_mel(mel):
     mel = torch.clamp(mel, min=-TACOTRON_MEL_MAX)
     return mel*0.18215
 
-def denormalize_cvec(norm_mel):
-    return norm_mel/0.11111
-def normalize_cvec(mel):
-    return mel*0.11111
-
 class AA_diffusion(nn.Module):
-    def __init__(self, config, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.refer_enc = CLIP(**config['clip'])
-        self.refer_model = ReferenceNet(**config['refer_diffusion'])
-        self.base_model = BaseModel(**config['base_diffusion'])
+    def __init__(self,
+        in_channels= 100,
+        out_channels= 200,
+        model_channels= 512,
+        num_heads= 8,
+        num_layers= 6,
+        in_latent_channels= 512,
+        dropout= 0.1,
+        mrte=None
+        ):
+        super().__init__()
+        self.model_channels = model_channels
+        self.refer_model = ReferenceNet(model_channels, out_channels,
+                num_layers, num_heads, dropout, referencenet=True)
+        self.base_model = BaseModel(model_channels, out_channels, 
+                num_layers, num_heads, dropout)
         print("base model params:", count_parameters(self.base_model))
         self.unconditioned_percentage = 0.1
-        self.mrte = MRTE(**config['mrte'])
-        # self.control_model = instantiate_from_config(control_stage_config)
-        # self.refer_model = instantiate_from_config(refer_config)
-        self.control_scales = [1.0] * 13
-        # self.unconditioned_embedding = nn.Parameter(torch.randn(1,100,1))
-        self.unconditioned_cat_embedding = nn.Parameter(torch.randn(1,config['base_diffusion']['context_dim'],1))
+        self.unconditioned_cat_embedding = nn.Parameter(torch.randn(1,model_channels,1))
+        self.latent_enc = nn.Sequential(
+            nn.Conv1d(in_latent_channels, model_channels, 3, padding=1),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+        )
+        self.refer_enc = nn.Sequential(
+            nn.Conv1d(in_channels, model_channels, 3, padding=1),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+        )
+        self.mrte = MRTE(**mrte)
+        self.time_embed = nn.Sequential(
+            nn.Linear(model_channels, model_channels),
+            nn.SiLU(),
+            nn.Linear(model_channels, model_channels),
+        )
+
+        self.conditioning_timestep_integrator = TimestepEmbedSequential(
+            DiffusionLayer(model_channels, dropout, num_heads),
+            DiffusionLayer(model_channels, dropout, num_heads),
+            DiffusionLayer(model_channels, dropout, num_heads),
+        )
+        self.inp_block = nn.Conv1d(in_channels, model_channels, 3, 1, 1)
+        self.integrating_conv = nn.Conv1d(model_channels*2, model_channels, kernel_size=1)
     def get_uncond_batch(self, code_emb):
         unconditioned_batches = torch.zeros((code_emb.shape[0], 1, 1), device=code_emb.device)
         # Mask out the conditioning branch for whole batch elements, implementing something similar to classifier-free guidance.
@@ -328,15 +243,21 @@ class AA_diffusion(nn.Module):
             code_emb = torch.where(unconditioned_batches, self.unconditioned_cat_embedding.repeat(code_emb.shape[0], 1, 1),
                                    code_emb)
         return code_emb
-    def forward(self, x, t, hint, refer, conditioning_free=False):
-        hint = self.mrte(refer, hint)
+    def forward(self, x, timesteps, latent, refer, conditioning_free=False):
+        latent = self.latent_enc(latent)
+        refer = self.refer_enc(refer)
+        latent = self.mrte(refer, latent)
         if conditioning_free:
-            hint = self.unconditioned_cat_embedding.repeat(x.shape[0], 1, x.shape[-1])
+            latent = self.unconditioned_cat_embedding.repeat(x.shape[0], 1, x.shape[-1])
         else:
             if self.training:
-                hint = self.get_uncond_batch(hint)
-            hint = F.interpolate(hint, size=x.shape[-1], mode='nearest')
-        refer_cross = self.refer_enc(refer)
-        refer_self = self.refer_model(refer, timesteps = t, context = refer_cross)
-        eps = self.base_model(x, timesteps=t, context=refer_cross, hint=hint, control=refer_self)
+                latent = self.get_uncond_batch(latent)
+            latent = F.interpolate(latent, size=x.shape[-1], mode='nearest')
+        time_emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        latent = self.conditioning_timestep_integrator(latent, time_emb)
+        x = self.inp_block(x)
+        x = torch.cat([x, latent], dim=1)
+        x = self.integrating_conv(x)
+        refers = self.refer_model(refer, time_emb = time_emb)
+        eps = self.base_model(x, time_emb=time_emb, latent=latent, refers=refers)
         return eps
