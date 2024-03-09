@@ -4,18 +4,21 @@ import json
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from ttts.utils.utils import EMA, clean_checkpoints, plot_spectrogram_to_numpy, summarize, update_moving_average
+from ttts.utils.utils import clean_checkpoints, plot_spectrogram_to_numpy, summarize
 from ttts.vqvae.dataset import PreprocessedMelDataset, VQVAECollater
 import torch
 import os
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from torch import nn
 from torch.optim import AdamW
 from accelerate import Accelerator
 from ttts.vqvae.rvq1 import RVQ1
-
-from ttts.vqvae.dvae import DiscreteVAE
-
+from ttts.utils.data_utils import spec_to_mel_torch, mel_spectrogram_torch, HParams
+from ttts.utils import commons
+import torchaudio
+from ttts.vqvae.losses import generator_loss, discriminator_loss, feature_loss, kl_loss
+from ttts.vqvae.hifigan import MultiPeriodDiscriminator
 
 def set_requires_grad(model, val):
     for p in model.parameters():
@@ -30,6 +33,8 @@ def get_grad_norm(model):
             print(name)
     total_norm = total_norm ** (1. / 2) 
     return total_norm
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 def cycle(dl):
     while True:
         for data in dl:
@@ -38,20 +43,25 @@ class Trainer(object):
     def __init__(self, cfg_path='ttts/vqvae/config.json'):
         self.accelerator = Accelerator()
         self.cfg = json.load(open(cfg_path))
-        self.vqvae = RVQ1(**self.cfg['vqvae'])
+        hps = HParams(**self.cfg)
+        self.hps = hps
+        self.G = RVQ1(**self.cfg['vqvae'],
+            gan_config=self.cfg['gan'],segment_size=hps.train.segment_size // hps.data.hop_length)
+        self.D =  MultiPeriodDiscriminator()
+        print("G params:", count_parameters(self.G))
+        print("D params:", count_parameters(self.D))
         self.dataset = PreprocessedMelDataset(self.cfg)
         self.dataloader = DataLoader(self.dataset, **self.cfg['dataloader'],collate_fn=VQVAECollater())
-        
         self.train_steps = self.cfg['train']['train_steps']
         self.val_freq = self.cfg['train']['val_freq']
         if self.accelerator.is_main_process:
-            # self.ema_model = self._get_target_encoder(self.vqvae).to(self.accelerator.device)
             now = datetime.now()
             self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
             self.logs_folder.mkdir(exist_ok = True, parents=True)
-        # self.ema_updater = EMA(0.999)
-        self.optimizer = AdamW(self.vqvae.parameters(),lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
-        self.vqvae, self.dataloader, self.optimizer = self.accelerator.prepare(self.vqvae, self.dataloader, self.optimizer)
+        self.G_optimizer = AdamW(self.G.parameters(),lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
+        self.D_optimizer = AdamW(self.D.parameters(),lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
+        self.G, self.G_optimizer, self.D, self.D_optimizer, self.dataloader = self.accelerator.prepare(
+            self.G, self.G_optimizer, self.D, self.D_optimizer, self.dataloader)
         self.dataloader = cycle(self.dataloader)
         self.step=0
         self.gradient_accumulate_every=1
@@ -66,7 +76,8 @@ class Trainer(object):
             return
         data = {
             'step': self.step,
-            'model': self.accelerator.get_state_dict(self.vqvae),
+            'G': self.accelerator.get_state_dict(self.G),
+            'D': self.accelerator.get_state_dict(self.D),
         }
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
 
@@ -74,62 +85,114 @@ class Trainer(object):
         accelerator = self.accelerator
         device = accelerator.device
         data = torch.load(model_path, map_location=device)
-        state_dict = data['model']
+        G_state_dict = data['G']
+        D_state_dict = data['D']
         self.step = data['step']
-        vqvae = accelerator.unwrap_model(self.vqvae)
-        vqvae.load_state_dict(state_dict)
-        # if self.accelerator.is_local_main_process:
-        #     self.ema_model.load_state_dict(state_dict)
+        G = accelerator.unwrap_model(self.G)
+        G.load_state_dict(G_state_dict)
+        D = accelerator.unwrap_model(self.D)
+        D.load_state_dict(D_state_dict)
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
+        hps = self.hps
         if accelerator.is_main_process:
             writer = SummaryWriter(log_dir=self.logs_folder)
         with tqdm(initial = self.step, total = self.train_steps, disable = not accelerator.is_main_process) as pbar:
             while self.step < self.train_steps:
-                total_loss = 0.
                 # with torch.autograd.detect_anomaly():
-                for _ in range(self.gradient_accumulate_every):
-                    data = next(self.dataloader)
-                    mel = data['mel']
-                    hubert = data['hubert']
-                    mel = mel.to(device).squeeze(1)
-                    hubert = hubert.to(device).squeeze(1)
-                    with self.accelerator.autocast():
-                        recon_loss, commitment_loss, semantic_loss, mel_recon = self.vqvae(mel, hubert)
-                        loss = recon_loss+0.25*commitment_loss+semantic_loss
-                        loss = loss / self.gradient_accumulate_every
-                        total_loss += loss.item()
+                data = next(self.dataloader)
+                spec = data['spec']
+                hubert = data['hubert']
+                wav = data['wav']
+                spec = spec.to(device).squeeze(1)
+                hubert = hubert.to(device).squeeze(1)
+                wav = wav.to(device)
+                with self.accelerator.autocast():
+                    y_hat, commit_loss, semantic_loss, ids_slice, quantized = self.G(spec, hubert)
+                    mel = spec_to_mel_torch(
+                        spec,
+                        hps.data.filter_length,
+                        hps.data.n_mel_channels,
+                        hps.data.sampling_rate,
+                        hps.data.mel_fmin,
+                        hps.data.mel_fmax,
+                    )
+                    y_mel = commons.slice_segments(
+                        mel, ids_slice, hps.train.segment_size // hps.data.hop_length
+                    )
+                    y_hat_mel = mel_spectrogram_torch(
+                        y_hat.squeeze(1),
+                        hps.data.filter_length,
+                        hps.data.n_mel_channels,
+                        hps.data.sampling_rate,
+                        hps.data.hop_length,
+                        hps.data.win_length,
+                        hps.data.mel_fmin,
+                        hps.data.mel_fmax,
+                    )
 
-                    self.accelerator.backward(loss)
-                grad_norm = get_grad_norm(self.vqvae)
-                accelerator.clip_grad_norm_(self.vqvae.parameters(), 1.0)
-                pbar.set_description(f'loss: {total_loss:.4f}')
+                    y = commons.slice_segments(
+                        wav.unsqueeze(1), ids_slice * hps.data.hop_length, hps.train.segment_size
+                    )  # slice
+                    # Discriminator
+                    y_d_hat_r, y_d_hat_g, _, _ = self.D(y, y_hat.detach())
+                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
+                    y_d_hat_r, y_d_hat_g
+                )
+                loss_disc_all = loss_disc
+                self.accelerator.backward(loss_disc_all)
+                D_grad_norm = get_grad_norm(self.D)
+                accelerator.clip_grad_norm_(self.D.parameters(), 1.0)
                 accelerator.wait_for_everyone()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                self.D_optimizer.step()
+                self.D_optimizer.zero_grad()
                 accelerator.wait_for_everyone()
-                # if accelerator.is_main_process:
-                #     update_moving_average(self.ema_updater,self.ema_model,self.vqvae)
+                
+                # Generator
+                with self.accelerator.autocast():
+                    y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.D(y, y_hat)
+                loss_mel = F.l1_loss(y_mel, y_hat_mel) * 45
+                loss_fm = feature_loss(fmap_r, fmap_g)
+                loss_gen, losses_gen = generator_loss(y_d_hat_g)
+                loss_gen_all = loss_gen + loss_fm + loss_mel + commit_loss + semantic_loss*10
+                
+                self.accelerator.backward(loss_gen_all)
+                G_grad_norm = get_grad_norm(self.G)
+                accelerator.clip_grad_norm_(self.G.parameters(), 1.0)
+                pbar.set_description(f'G_loss:{loss_gen_all:.4f} D_loss:{loss_disc_all:.4f}')
+                accelerator.wait_for_everyone()
+                self.G_optimizer.step()
+                self.G_optimizer.zero_grad()
+                accelerator.wait_for_everyone()
                 if accelerator.is_main_process and self.step % self.val_freq == 0:
                     with torch.no_grad():
-                        # self.ema_model.eval()
-                        eval_model = self.accelerator.unwrap_model(self.vqvae)
+                        eval_model = self.accelerator.unwrap_model(self.G)
                         eval_model.eval()
-                        # mel_recon_ema = self.ema_model.infer(mel)[0]
-                        _, _, _, mel_recon_eval = eval_model(mel, hubert)
+                        wav_eval = eval_model.infer(spec)
                         eval_model.train()
-                    scalar_dict = {"loss": total_loss, "loss_mel":recon_loss, "loss_commitment":commitment_loss, "loss/grad": grad_norm, "loss_semantic":semantic_loss}
+                    scalar_dict = {"gen/loss_gen_all": loss_gen_all, "gen/loss_gen":loss_gen,
+                        'gen/loss_fm':loss_fm,'gen/loss_mel':loss_mel,'gen/commit_loss':commit_loss,
+                        'gen/semantic_loss':semantic_loss,
+                        "norm/G_grad": G_grad_norm, "norm/D_grad": D_grad_norm,
+                        'disc/loss_disc_all':loss_disc_all}
                     image_dict = {
-                        "all/spec": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
-                        "all/spec_pred": plot_spectrogram_to_numpy(mel_recon[0, :, :].detach().unsqueeze(-1).cpu()),
-                        "all/spec_pred_eval": plot_spectrogram_to_numpy(mel_recon_eval[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "mel": plot_spectrogram_to_numpy(y_mel[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "mel_pred": plot_spectrogram_to_numpy(y_hat_mel[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
+                    audios_dict = {
+                        'gt':wav[0].detach().cpu(),
+                        'pred':wav_eval[0].detach().cpu()
+                    }
+                    milestone = self.step // self.cfg['train']['save_freq'] 
+                    torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), wav_eval[0].detach().cpu(), 32000)
                     summarize(
                         writer=writer,
                         global_step=self.step,
                         images=image_dict,
-                        scalars=scalar_dict
+                        audios=audios_dict,
+                        scalars=scalar_dict,
+                        audio_sampling_rate=32000
                     )
                 if accelerator.is_main_process and self.step % self.cfg['train']['save_freq']==0:
                     keep_ckpts = self.cfg['train']['keep_ckpts']
@@ -143,5 +206,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-03-16-57-59/model-9.pt')
+    trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-09-14-32-56/model-1.pt')
     trainer.train()

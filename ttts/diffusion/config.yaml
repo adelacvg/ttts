@@ -22,13 +22,14 @@ aa_diffusion:
   in_channels: 100
   out_channels: 200
   model_channels: 512
-  num_heads: 8
-  num_layers: 4
+  num_heads: 16
+  num_layers: 6
   in_latent_channels: 512
-  dropout: 0.1
-  mrte:
-    mel_channels : 512
-    semantic_channels : 512
-    model_channels : 512
-    out_channels : 512
-    num_heads : 8
+  dropout: 0
+  layer_drop: 0.1
+  # mrte:
+  #   mel_channels : 512
+  #   semantic_channels : 512
+  #   model_channels : 512
+  #   out_channels : 512
+  #   num_heads : 8

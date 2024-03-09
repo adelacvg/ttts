@@ -180,8 +180,8 @@ class Trainer(object):
                             )["loss"].mean()
                         unused_params =[]
                         model = self.accelerator.unwrap_model(self.diffusion)
-                        unused_params.extend(list(model.refer_model.layers.parameters()))
-                        unused_params.extend(list(model.refer_model.out.parameters()))
+                        # unused_params.extend(list(model.refer_model.parameters()))
+                        # unused_params.extend(list(model.refer_model.out.parameters()))
                         # unused_params.extend(list(model.refer_model.out.parameters()))
                         # unused_params.extend(list(model.refer_model.hint_converter.parameters()))
                         # unused_params.extend(list(model.refer_enc.visual.proj))

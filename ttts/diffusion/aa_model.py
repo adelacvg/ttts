@@ -1,4 +1,3 @@
-from ttts.diffusion.mrte import MRTE
 import torch as th
 from einops import rearrange, repeat
 import torch
@@ -7,8 +6,21 @@ import torch.nn.functional as F
 from abc import abstractmethod
 from torch import autocast
 import math
+import random
 
 from ttts.utils.utils import normalization, AttentionBlock
+from ttts.utils.vc_utils import MultiHeadAttention
+
+TACOTRON_MEL_MAX = 5.5451774444795624753378569716654
+TACOTRON_MEL_MIN = -16.118095650958319788125940182791
+# TACOTRON_MEL_MIN = -11.512925464970228420089957273422
+
+def denormalize_tacotron_mel(norm_mel):
+    return norm_mel/0.18215
+
+def normalize_tacotron_mel(mel):
+    mel = torch.clamp(mel, min=-TACOTRON_MEL_MAX)
+    return mel*0.18215
 
 def is_latent(t):
     return t.dtype == torch.float
@@ -135,129 +147,143 @@ class DiffusionLayer(TimestepBlock):
             y = y[:,:,:-refer.shape[-1]]
         return y
 
+class RefEncoder(nn.Module):
+    def __init__(
+        self,
+        ref_dim,
+        dim,
+        num_latents=32,
+        num_heads=8,
+    ):
+        super().__init__()
+        self.latents = nn.Parameter(torch.randn(num_latents, ref_dim))
+        nn.init.normal_(self.latents, std=0.02)
+        self.cross_attention = MultiHeadAttention(ref_dim, ref_dim, num_heads)
+        self.enc = self.enc = nn.Sequential(
+            nn.Conv1d(ref_dim, dim, kernel_size=3, padding=1),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+        )
+    def forward(self, x):
+        batch = x.shape[0]
+        latents = repeat(self.latents, "n d -> b d n", b=batch)
+        latents = self.cross_attention(latents, x)
+        latents = torch.cat((latents,x),-1)
+        latents = self.enc(latents)
+        latents = latents[:,:self.latents.shape[1],:]
+        latents = torch.mean(latents,-1)
+        return latents
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-class BaseModel(nn.Module):
+class AA_diffusion(nn.Module):
     def __init__(
-        self,
-        model_channels,
-        out_channels,
-        num_layers,
-        num_heads=8,
-        dropout=0.1,
-        referencenet=False
+            self,
+            model_channels=512,
+            num_layers=8,
+            in_channels=100,
+            in_latent_channels=512,
+            out_channels=200,  # mean and variance
+            dropout=0,
+            num_heads=16,
+            use_fp16=False,
+            layer_drop=.1,
+            unconditioned_percentage=.1,  # This implements a mechanism similar to what is used in classifier-free training.
     ):
         super().__init__()
-        if referencenet==False:
-            self.layers = nn.ModuleList([DiffusionLayer(model_channels, dropout, num_heads) for _ in range(num_layers)] +
-                                    [ResBlock(model_channels, model_channels, dropout, dims=1, use_scale_shift_norm=True) for _ in range(3)])
-        else:
-            self.layers = nn.ModuleList([DiffusionLayer(model_channels, dropout, num_heads) for _ in range(num_layers)])
-        self.out = nn.Sequential(
-            normalization(model_channels),
-            nn.SiLU(),
-            nn.Conv1d(model_channels, out_channels, 3, padding=1),
-        )
-    def forward(self, x, time_emb=None, latent=None, refers=None,  **kwargs):
-        for i, lyr in enumerate(self.layers):
-            if i<len(self.layers)-3:
-                refer = refers.pop(0)
-                x = lyr(x, time_emb, refer=refer)
-            else:
-                x = lyr(x, time_emb)
 
-        out = self.out(x)
-        return out
-
-class ReferenceNet(BaseModel):
-    def forward(self, x, time_emb=None, **kwargs):
-        refers = []
-        for i, lyr in enumerate(self.layers):
-            refers.append(x)
-            x = lyr(x, time_emb)
-
-        return refers
-
-TACOTRON_MEL_MAX = 5.5451774444795624753378569716654
-TACOTRON_MEL_MIN = -16.118095650958319788125940182791
-# TACOTRON_MEL_MIN = -11.512925464970228420089957273422
-def denormalize_tacotron_mel(norm_mel):
-    return norm_mel/0.18215
-def normalize_tacotron_mel(mel):
-    mel = torch.clamp(mel, min=-TACOTRON_MEL_MAX)
-    return mel*0.18215
-
-class AA_diffusion(nn.Module):
-    def __init__(self,
-        in_channels= 100,
-        out_channels= 200,
-        model_channels= 512,
-        num_heads= 8,
-        num_layers= 6,
-        in_latent_channels= 512,
-        dropout= 0.1,
-        mrte=None
-        ):
-        super().__init__()
+        self.in_channels = in_channels
         self.model_channels = model_channels
-        self.refer_model = ReferenceNet(model_channels, out_channels,
-                num_layers, num_heads, dropout, referencenet=True)
-        self.base_model = BaseModel(model_channels, out_channels, 
-                num_layers, num_heads, dropout)
-        print("base model params:", count_parameters(self.base_model))
-        self.unconditioned_percentage = 0.1
-        self.unconditioned_cat_embedding = nn.Parameter(torch.randn(1,model_channels,1))
-        self.latent_enc = nn.Sequential(
-            nn.Conv1d(in_latent_channels, model_channels, 3, padding=1),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-        )
-        self.refer_enc = nn.Sequential(
-            nn.Conv1d(in_channels, model_channels, 3, padding=1),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-        )
-        self.mrte = MRTE(**mrte)
+        self.out_channels = out_channels
+        self.dropout = dropout
+        self.num_heads = num_heads
+        self.unconditioned_percentage = unconditioned_percentage
+        self.enable_fp16 = use_fp16
+        self.layer_drop = layer_drop
+
+        self.inp_block = nn.Conv1d(in_channels, model_channels, 3, 1, 1)
         self.time_embed = nn.Sequential(
             nn.Linear(model_channels, model_channels),
             nn.SiLU(),
             nn.Linear(model_channels, model_channels),
         )
+        self.code_norm = normalization(model_channels)
 
+        self.latent_conditioner = nn.Sequential(
+            nn.Conv1d(in_latent_channels, model_channels, 3, padding=1),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+        )
+        self.unconditioned_embedding = nn.Parameter(torch.randn(1,model_channels,1))
         self.conditioning_timestep_integrator = TimestepEmbedSequential(
             DiffusionLayer(model_channels, dropout, num_heads),
             DiffusionLayer(model_channels, dropout, num_heads),
             DiffusionLayer(model_channels, dropout, num_heads),
         )
-        self.inp_block = nn.Conv1d(in_channels, model_channels, 3, 1, 1)
+        self.refer_enc = nn.Sequential(
+            nn.Conv1d(in_channels, model_channels, 3, padding=1),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            RefEncoder(model_channels,model_channels),
+        )
+
         self.integrating_conv = nn.Conv1d(model_channels*2, model_channels, kernel_size=1)
-    def get_uncond_batch(self, code_emb):
-        unconditioned_batches = torch.zeros((code_emb.shape[0], 1, 1), device=code_emb.device)
+        self.layers = nn.ModuleList([DiffusionLayer(model_channels, dropout, num_heads) for _ in range(num_layers)] +
+                                    [ResBlock(model_channels, model_channels, dropout, dims=1, use_scale_shift_norm=True) for _ in range(3)])
+
+        self.out = nn.Sequential(
+            normalization(model_channels),
+            nn.SiLU(),
+            nn.Conv1d(model_channels, out_channels, 3, padding=1),
+        )
+
+    def timestep_independent(self, latent, refer, expected_seq_len):
+        latent_emb = self.latent_conditioner(latent)
+        refer_emb = self.refer_enc(refer)
+        latent_emb = self.code_norm(latent_emb) + refer_emb.unsqueeze(-1)
+
+        unconditioned_batches = torch.zeros((latent_emb.shape[0], 1, 1), device=latent_emb.device)
         # Mask out the conditioning branch for whole batch elements, implementing something similar to classifier-free guidance.
         if self.training and self.unconditioned_percentage > 0:
-            unconditioned_batches = torch.rand((code_emb.shape[0], 1, 1),
-                                               device=code_emb.device) < self.unconditioned_percentage
-            code_emb = torch.where(unconditioned_batches, self.unconditioned_cat_embedding.repeat(code_emb.shape[0], 1, 1),
-                                   code_emb)
-        return code_emb
-    def forward(self, x, timesteps, latent, refer, conditioning_free=False):
-        latent = self.latent_enc(latent)
-        refer = self.refer_enc(refer)
-        latent = self.mrte(refer, latent)
+            unconditioned_batches = torch.rand((latent_emb.shape[0], 1, 1),
+                                               device=latent_emb.device) < self.unconditioned_percentage
+            latent_emb = torch.where(unconditioned_batches, self.unconditioned_embedding.repeat(latent.shape[0], 1, 1),
+                                   latent_emb)
+        expanded_latent_emb = F.interpolate(latent_emb, size=expected_seq_len, mode='nearest')
+
+        return expanded_latent_emb
+    def forward(self, x, timesteps, latent=None, refer=None, conditioning_free=False):
+        unused_params = []
         if conditioning_free:
-            latent = self.unconditioned_cat_embedding.repeat(x.shape[0], 1, x.shape[-1])
+            latent_emb = self.unconditioned_embedding.repeat(x.shape[0], 1, x.shape[-1])
+            unused_params.extend(list(self.latent_conditioner.parameters()))
         else:
-            if self.training:
-                latent = self.get_uncond_batch(latent)
-            latent = F.interpolate(latent, size=x.shape[-1], mode='nearest')
+            latent_emb = self.timestep_independent(latent, refer, x.shape[-1])
+            unused_params.append(self.unconditioned_embedding)
+
         time_emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        latent = self.conditioning_timestep_integrator(latent, time_emb)
+        latent_emb = self.conditioning_timestep_integrator(latent_emb, time_emb)
         x = self.inp_block(x)
-        x = torch.cat([x, latent], dim=1)
+        x = torch.cat([x, latent_emb], dim=1)
         x = self.integrating_conv(x)
-        refers = self.refer_model(refer, time_emb = time_emb)
-        eps = self.base_model(x, time_emb=time_emb, latent=latent, refers=refers)
-        return eps
+        for i, lyr in enumerate(self.layers):
+            if self.training and self.layer_drop > 0 and i != 0 and i != (len(self.layers)-1) and random.random() < self.layer_drop:
+                unused_params.extend(list(lyr.parameters()))
+            else:
+                x = lyr(x, time_emb)
+        x = x.float()
+        out = self.out(x)
+        # Involve probabilistic or possibly unused parameters in loss so we don't get DDP errors.
+        extraneous_addition = 0
+        for p in unused_params:
+            extraneous_addition = extraneous_addition + p.mean()
+        out = out + extraneous_addition * 0
+
+        return out
+
+

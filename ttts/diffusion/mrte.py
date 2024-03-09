@@ -33,7 +33,9 @@ class MRTE(nn.Module):
         self.c_post = nn.Conv1d(model_channels, semantic_channels, 1)
         self.ge_enc = nn.Sequential(
             nn.Conv1d(mel_channels, model_channels, kernel_size=3, padding=1),
-            RefEncoder(model_channels,model_channels)
+            RefEncoder(model_channels,model_channels),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             )
         self.post_enc = nn.Sequential(
             AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),

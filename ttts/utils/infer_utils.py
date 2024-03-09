@@ -27,7 +27,7 @@ def load_model(model_name, model_path, config_path, device):
         model = model.to(device)
     elif model_name=='diffusion':
         # model = DiffusionTts(**config['diffusion'])
-        model = AA_diffusion(config)
+        model = AA_diffusion(**config['aa_diffusion'])
         diffusion = torch.load(model_path, map_location=device)['model']
         model.load_state_dict(diffusion, strict=True)
         model = model.to(device)
