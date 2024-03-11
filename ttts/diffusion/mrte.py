@@ -1,13 +1,39 @@
 # This is Multi-reference timbre encoder
-
 import torch
 from torch import nn
 from ttts.utils.utils import normalization, AttentionBlock
 import torch.nn.functional as F
+from einops import rearrange, repeat
 import math
-from ttts.vqvae.rvq1 import RefEncoder
 from ttts.utils.vc_utils import MultiHeadAttention
 
+class RefEncoder(nn.Module):
+    def __init__(
+        self,
+        ref_dim,
+        dim,
+        num_latents=32,
+        num_heads=8,
+    ):
+        super().__init__()
+        self.latents = nn.Parameter(torch.randn(num_latents, ref_dim))
+        nn.init.normal_(self.latents, std=0.02)
+        self.cross_attention = MultiHeadAttention(ref_dim, ref_dim, num_heads)
+        self.enc = self.enc = nn.Sequential(
+            nn.Conv1d(ref_dim, dim, kernel_size=3, padding=1),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+        )
+    def forward(self, x):
+        batch = x.shape[0]
+        latents = repeat(self.latents, "n d -> b d n", b=batch)
+        latents = self.cross_attention(latents, x)
+        latents = torch.cat((latents,x),-1)
+        latents = self.enc(latents)
+        latents = latents[:,:self.latents.shape[1],:]
+        latents = torch.mean(latents,-1)
+        return latents
 
 class MRTE(nn.Module):
     def __init__(
@@ -22,25 +48,21 @@ class MRTE(nn.Module):
         self.cross_attention = MultiHeadAttention(model_channels, model_channels, num_heads)
         self.mel_enc = nn.Sequential(
             nn.Conv1d(mel_channels, model_channels, 3, padding=1),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
         )
         self.text_pre = nn.Sequential(
             nn.Conv1d(semantic_channels, model_channels, 1),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
         )
         self.c_post = nn.Conv1d(model_channels, semantic_channels, 1)
         self.ge_enc = nn.Sequential(
             nn.Conv1d(mel_channels, model_channels, kernel_size=3, padding=1),
             RefEncoder(model_channels,model_channels),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            # AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+            # AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
             )
-        self.post_enc = nn.Sequential(
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-            AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
-        )
+        # self.post_enc = nn.Sequential(
+        #     AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+        #     AttentionBlock(model_channels, num_heads, relative_pos_embeddings=True),
+        # )
 
 
     def forward(self, refer, text):
@@ -54,7 +76,6 @@ class MRTE(nn.Module):
             + text
             + ge.unsqueeze(-1)
         )
-        x = self.post_enc(x)
         x = self.c_post(x)
         return x
 

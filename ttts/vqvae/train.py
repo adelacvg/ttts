@@ -45,9 +45,8 @@ class Trainer(object):
         self.cfg = json.load(open(cfg_path))
         hps = HParams(**self.cfg)
         self.hps = hps
-        self.G = RVQ1(**self.cfg['vqvae'],
-            gan_config=self.cfg['gan'],segment_size=hps.train.segment_size // hps.data.hop_length)
-        self.D =  MultiPeriodDiscriminator()
+        self.G = RVQ1(**hps.vqvae,segment_size = hps.train.segment_size // hps.data.hop_length)
+        self.D = MultiPeriodDiscriminator()
         print("G params:", count_parameters(self.G))
         print("D params:", count_parameters(self.D))
         self.dataset = PreprocessedMelDataset(self.cfg)
@@ -109,7 +108,9 @@ class Trainer(object):
                 hubert = hubert.to(device).squeeze(1)
                 wav = wav.to(device)
                 with self.accelerator.autocast():
-                    y_hat, commit_loss, semantic_loss, ids_slice, quantized = self.G(spec, hubert)
+                    (y_hat, commit_loss, 
+                     ids_slice, (z, z_p, m_p, logs_p, m_q, logs_q),
+                     quantized,semantic_loss) = self.G(spec, hubert)
                     mel = spec_to_mel_torch(
                         spec,
                         hps.data.filter_length,
@@ -152,10 +153,11 @@ class Trainer(object):
                 # Generator
                 with self.accelerator.autocast():
                     y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.D(y, y_hat)
+                loss_kl = kl_loss(z_p, logs_q, m_p, logs_p)
                 loss_mel = F.l1_loss(y_mel, y_hat_mel) * 45
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + commit_loss + semantic_loss*10
+                loss_gen_all = loss_gen + loss_fm + loss_mel + commit_loss + loss_kl + semantic_loss
                 
                 self.accelerator.backward(loss_gen_all)
                 G_grad_norm = get_grad_norm(self.G)
@@ -169,11 +171,11 @@ class Trainer(object):
                     with torch.no_grad():
                         eval_model = self.accelerator.unwrap_model(self.G)
                         eval_model.eval()
-                        wav_eval = eval_model.infer(spec)
+                        wav_eval, _ = eval_model.infer(spec,hubert)
                         eval_model.train()
                     scalar_dict = {"gen/loss_gen_all": loss_gen_all, "gen/loss_gen":loss_gen,
                         'gen/loss_fm':loss_fm,'gen/loss_mel':loss_mel,'gen/commit_loss':commit_loss,
-                        'gen/semantic_loss':semantic_loss,
+                        'gen/loss_kl':loss_kl,'gen/loss_semantic':semantic_loss,
                         "norm/G_grad": G_grad_norm, "norm/D_grad": D_grad_norm,
                         'disc/loss_disc_all':loss_disc_all}
                     image_dict = {
@@ -206,5 +208,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-09-14-32-56/model-1.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-10-05-52-24/model-61.pt')
     trainer.train()

@@ -39,9 +39,9 @@ class PreprocessedMelDataset(torch.utils.data.Dataset):
             hubert = torch.load(hubert_path).detach()
         except:
             return None
-        if (hubert.shape[-1] != spec.shape[-1]):
+        if (hubert.shape[-1] != spec.shape[-1]) and abs(hubert.shape[-1]-spec.shape[-1])==1:
             hubert = F.pad(hubert, (0, 1), mode="replicate")
-        # hubert = vc_utils.repeat_expand_2d(hubert.squeeze(0), spec.shape[-1]).unsqueeze(0)
+        hubert = vc_utils.repeat_expand_2d(hubert.squeeze(0), spec.shape[-1]).unsqueeze(0)
         assert hubert.shape[-1]==spec.shape[-1]
         spec_raw = spec
         if spec.shape[-1] > self.pad_to:

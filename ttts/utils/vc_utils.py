@@ -482,7 +482,8 @@ def get_logger(model_dir, filename="train.log"):
 
 def repeat_expand_2d(content, target_len):
     # content : [h, t]
-
+    if content.shape[-1]==target_len:
+      return content
     src_len = content.shape[-1]
     target = torch.zeros([content.shape[0], target_len], dtype=torch.float).to(content.device)
     temp = torch.arange(src_len+1) * target_len / src_len

@@ -14,18 +14,11 @@
     "pad_to_samples":200,
     "should_squeeze": true
   },
-  "vqvae":{
-    "dimension":512, 
-    "n_q":1, 
-    "bins":1024,
-    "mel_channels":1025,
-    "hubert_channels":768
-  },
   "dataloader":
   {
-    "batch_size" : 32,
+    "batch_size" : 8,
     "shuffle": true,
-    "num_workers" : 64,
+    "num_workers" : 8,
     "drop_last":true, 
     "pin_memory":true
   },
@@ -42,8 +35,11 @@
     "n_speakers": 300,
     "cleaned_text": true
   },
-  "gan": {
-    "initial_channel": 512,
+  "vqvae": {
+    "spec_channels":1025,
+    "hubert_channels":768,
+    "inter_channels":192,
+    "dim":192,
     "resblock": "1",
     "resblock_kernel_sizes": [
       3,
@@ -83,9 +79,5 @@
       2
     ],
     "gin_channels": 512
-  },
-  "comment":{
-    "sampler":"sampler", 
-    "collate_fn":"collate_fn"
   }
 }
