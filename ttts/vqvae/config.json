@@ -6,17 +6,17 @@
     "keep_ckpts" : 3,
     "lr":1e-4,
     "segment_size": 20480,
-    "logs_folder":"ttts/vqvae/logs"
+    "logs_folder":"ttts/vqvae/logs",
+    "batch_size" : 16
   },
   "dataset": {
     "pre":"~/tortoise_plus_zh",
-    "path":"ttts/datasets/hq_data.jsonl",
+    "path":"ttts/datasets/44k_data.jsonl",
     "pad_to_samples":200,
     "should_squeeze": true
   },
   "dataloader":
   {
-    "batch_size" : 8,
     "shuffle": true,
     "num_workers" : 8,
     "drop_last":true, 
@@ -36,10 +36,13 @@
     "cleaned_text": true
   },
   "vqvae": {
-    "spec_channels":1025,
-    "hubert_channels":768,
-    "inter_channels":192,
-    "dim":192,
+    "inter_channels": 192,
+    "hidden_channels": 192,
+    "filter_channels": 768,
+    "n_heads": 2,
+    "n_layers": 6,
+    "kernel_size": 3,
+    "p_dropout": 0.1,
     "resblock": "1",
     "resblock_kernel_sizes": [
       3,
@@ -78,6 +81,10 @@
       2,
       2
     ],
-    "gin_channels": 512
+    "n_layers_q": 3,
+    "use_spectral_norm": false,
+    "gin_channels": 512,
+    "semantic_frame_rate": "25hz",
+    "freeze_quantizer": true
   }
 }

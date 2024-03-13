@@ -28,7 +28,7 @@ def process_batch(file_paths, max_workers):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--path',default='ttts/datasets/hq_dataset')
+    parser.add_argument('--path',default='ttts/datasets/44k_dataset_clips')
     args = parser.parse_args()
     paths = find_audio_files(args.path, ['.wav'])
     # parser = argparse.ArgumentParser()

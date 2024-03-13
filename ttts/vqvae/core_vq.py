@@ -141,7 +141,6 @@ class EuclideanCodebook(nn.Module):
     def init_embed_(self, data):
         if self.inited:
             return
-
         embed, cluster_size = kmeans(data, self.codebook_size, self.kmeans_iters)
         self.embed.data.copy_(embed)
         self.embed_avg.data.copy_(embed.clone())

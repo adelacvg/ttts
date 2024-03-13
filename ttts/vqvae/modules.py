@@ -6,6 +6,8 @@ from torch.nn import functional as F
 
 from torch.nn import Conv1d
 from torch.nn.utils.parametrizations import weight_norm
+from torch.nn.utils.parametrize import remove_parametrizations
+# from torch.nn.utils import weight_norm, remove_weight_norm
 
 from ttts.utils import commons
 from ttts.utils.commons import init_weights, get_padding
@@ -158,7 +160,7 @@ class WN(torch.nn.Module):
             cond_layer = torch.nn.Conv1d(
                 gin_channels, 2 * hidden_channels * n_layers, 1
             )
-            self.cond_layer = weight_norm(cond_layer, name="weight")
+            self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name="weight")
 
         for i in range(n_layers):
             dilation = dilation_rate**i
@@ -170,7 +172,7 @@ class WN(torch.nn.Module):
                 dilation=dilation,
                 padding=padding,
             )
-            in_layer = weight_norm(in_layer, name="weight")
+            in_layer = torch.nn.utils.weight_norm(in_layer, name="weight")
             self.in_layers.append(in_layer)
 
             # last one is not necessary
@@ -180,10 +182,10 @@ class WN(torch.nn.Module):
                 res_skip_channels = hidden_channels
 
             res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
-            res_skip_layer = weight_norm(res_skip_layer, name="weight")
+            res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name="weight")
             self.res_skip_layers.append(res_skip_layer)
 
-    def forward(self, x, g=None, **kwargs):
+    def forward(self, x, x_mask, g=None, **kwargs):
         output = torch.zeros_like(x)
         n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
@@ -204,19 +206,19 @@ class WN(torch.nn.Module):
             res_skip_acts = self.res_skip_layers[i](acts)
             if i < self.n_layers - 1:
                 res_acts = res_skip_acts[:, : self.hidden_channels, :]
-                x = (x + res_acts)
+                x = (x + res_acts) * x_mask
                 output = output + res_skip_acts[:, self.hidden_channels :, :]
             else:
                 output = output + res_skip_acts
-        return output
+        return output * x_mask
 
     def remove_weight_norm(self):
         if self.gin_channels != 0:
-            torch.nn.utils.remove_weight_norm(self.cond_layer)
+            remove_parametrizations(self.cond_layer)
         for l in self.in_layers:
-            torch.nn.utils.remove_weight_norm(l)
+            remove_parametrizations(l)
         for l in self.res_skip_layers:
-            torch.nn.utils.remove_weight_norm(l)
+            remove_parametrizations(l)
 
 
 class ResBlock1(torch.nn.Module):
@@ -311,9 +313,9 @@ class ResBlock1(torch.nn.Module):
 
     def remove_weight_norm(self):
         for l in self.convs1:
-            remove_weight_norm(l)
+            remove_parametrizations(l)
         for l in self.convs2:
-            remove_weight_norm(l)
+            remove_parametrizations(l)
 
 
 class ResBlock2(torch.nn.Module):
@@ -358,7 +360,7 @@ class ResBlock2(torch.nn.Module):
 
     def remove_weight_norm(self):
         for l in self.convs:
-            remove_weight_norm(l)
+            remove_parametrizations(l)
 
 
 class Log(nn.Module):
@@ -435,11 +437,11 @@ class ResidualCouplingLayer(nn.Module):
         self.post.weight.data.zero_()
         self.post.bias.data.zero_()
 
-    def forward(self, x, g=None, reverse=False):
+    def forward(self, x, x_mask, g=None, reverse=False):
         x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
-        h = self.pre(x0)
-        h = self.enc(h, g=g)
-        stats = self.post(h)
+        h = self.pre(x0) * x_mask
+        h = self.enc(h, x_mask, g=g)
+        stats = self.post(h) * x_mask
         if not self.mean_only:
             m, logs = torch.split(stats, [self.half_channels] * 2, 1)
         else:
@@ -447,12 +449,12 @@ class ResidualCouplingLayer(nn.Module):
             logs = torch.zeros_like(m)
 
         if not reverse:
-            x1 = m + x1 * torch.exp(logs)
+            x1 = m + x1 * torch.exp(logs) * x_mask
             x = torch.cat([x0, x1], 1)
             logdet = torch.sum(logs, [1, 2])
             return x, logdet
         else:
-            x1 = (x1 - m) * torch.exp(-logs)
+            x1 = (x1 - m) * torch.exp(-logs) * x_mask
             x = torch.cat([x0, x1], 1)
             return x
 

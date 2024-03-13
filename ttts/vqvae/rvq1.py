@@ -12,17 +12,79 @@ from ttts.diffusion.ldm.util import exists
 from ttts.vqvae.quantize import ResidualVectorQuantizer
 from ttts.vqvae.hifigan import Generator
 from ttts.utils import commons
-from ttts.diffusion.mrte import MRTE, RefEncoder
 from ttts.vqvae.modules import WN, Flip, ResidualCouplingLayer
 
 def default(val, d):
     return val if val is not None else d
 
+class RefEncoder(nn.Module):
+    def __init__(
+        self,
+        ref_dim,
+        dim,
+        num_latents=32,
+        num_heads=8,
+    ):
+        super().__init__()
+        self.latents = nn.Parameter(torch.randn(num_latents, ref_dim))
+        nn.init.normal_(self.latents, std=0.02)
+        self.cross_attention = MultiHeadAttention(ref_dim, ref_dim, num_heads)
+        self.enc = self.enc = nn.Sequential(
+            nn.Conv1d(ref_dim, dim, kernel_size=3, padding=1),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+            AttentionBlock(dim, num_heads, relative_pos_embeddings=True),
+        )
+    def forward(self, x):
+        batch = x.shape[0]
+        latents = repeat(self.latents, "n d -> b d n", b=batch)
+        latents = self.cross_attention(latents, x)
+        latents = torch.cat((latents,x),-1)
+        latents = self.enc(latents)
+        latents = latents[:,:self.latents.shape[1],:]
+        latents = torch.mean(latents,-1)
+        return latents
+
+class MRTE(nn.Module):
+    def __init__(
+        self,
+        mel_channels=100,
+        semantic_channels=1024,
+        model_channels=512,
+        out_channels=1024,
+        gin_channels=512,
+        num_heads=4,
+    ):
+        super(MRTE, self).__init__()
+        self.cross_attention = MultiHeadAttention(model_channels, model_channels, num_heads)
+        self.mel_enc = nn.Sequential(
+            nn.Conv1d(mel_channels, model_channels, 3, padding=1),
+        )
+        self.text_pre = nn.Sequential(
+            nn.Conv1d(semantic_channels, model_channels, 1),
+        )
+        self.c_post = nn.Conv1d(model_channels, semantic_channels, 1)
+        self.ge_enc = nn.Sequential(
+            nn.Conv1d(gin_channels, model_channels, kernel_size=1),
+            )
+
+    def forward(self, refer, text, ge):
+        ge = self.ge_enc(ge)
+        mel = self.mel_enc(refer)
+        text = self.text_pre(text)
+        x = (
+            self.cross_attention(
+                text, mel
+            )
+            + text
+            + ge
+        )
+        x = self.c_post(x)
+        return x
+
 class TextEncoder(nn.Module):
     def __init__(
         self,
         text_channels,
-        refer_channels,
         dim,
         out_channels,
         gin_channels,
@@ -35,24 +97,26 @@ class TextEncoder(nn.Module):
         for _ in range(num_layers):
             modules.append(AttentionBlock(dim, num_heads, relative_pos_embeddings=True))
         self.enc1 = nn.Sequential(*modules)
-        # self.mrte = MRTE(
-        #     mel_channels=refer_channels,
-        #     semantic_channels=dim,
-        #     model_channels=dim,
-        #     out_channels=dim,
-        #     num_heads=16,
-        # )
+        self.mrte = MRTE(
+            mel_channels = dim,
+            semantic_channels = dim,
+            model_channels = dim,
+            out_channels =dim,
+            gin_channels = gin_channels,
+            num_heads=16,
+        )
+        self.latents = nn.Parameter(torch.randn(256, dim))
+        nn.init.normal_(self.latents, std=0.02)
         modules=[]
         for _ in range(num_layers):
             modules.append(AttentionBlock(dim, num_heads, relative_pos_embeddings=True))
         self.enc2 = nn.Sequential(*modules)
-        self.ge_proj = nn.Conv1d(gin_channels, dim, kernel_size=1)
         self.proj = nn.Conv1d(dim, out_channels*2, kernel_size=1)
         self.out_channels = out_channels
     def forward(self, x, ge=None):
         x = self.enc1(x)
-        # x = self.mrte(refer, x)
-        x = x+self.ge_proj(ge)
+        latents = repeat(self.latents, "n d -> b d n", b=x.shape[0])
+        x = self.mrte(latents, x, ge)
         x = self.enc2(x)
         stats = self.proj(x)
         m, logs = torch.split(stats, self.out_channels, dim=1)
@@ -184,7 +248,7 @@ class RVQ1(nn.Module):
         super().__init__()
         self.semantic_proj = nn.Conv1d(hubert_channels, hubert_channels,3,2,1)
         self.text_enc = TextEncoder(
-            hubert_channels, spec_channels,
+            hubert_channels, 
             768, inter_channels, gin_channels, 3, 16
         )
         self.semantic_enc = SemanticEncoder(
@@ -196,7 +260,6 @@ class RVQ1(nn.Module):
             16,
             gin_channels=gin_channels,
         )
-        # print("text_enc params:", count_parameters(self.text_enc))
         self.dec = Generator(
             inter_channels,
             resblock,
@@ -207,7 +270,6 @@ class RVQ1(nn.Module):
             upsample_kernel_sizes,
             gin_channels=gin_channels,
         )
-        # print("dec params:", count_parameters(self.dec))
         self.spec_enc = SpecEncoder(
             spec_channels,
             inter_channels,
@@ -217,7 +279,6 @@ class RVQ1(nn.Module):
             16,
             gin_channels=gin_channels,
         )
-        # print("spec_enc params:", count_parameters(self.spec_enc))
         self.flow = ResidualCouplingBlock(
             inter_channels,
             dim,
@@ -234,7 +295,6 @@ class RVQ1(nn.Module):
             num_latents=16,
             num_heads=16,
         ))
-        # print("ref_enc params:", count_parameters(self.ref_enc))
         self.quantizer = ResidualVectorQuantizer(
             dimension=hubert_channels, n_q=1, bins=1024)
         self.segment_size=segment_size

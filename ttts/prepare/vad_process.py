@@ -5,8 +5,8 @@ import os
 # out_path = 'ttts/datasets/cliped_datasets'
 def process_file_vad(paths):
     audio_path,out_path = paths
-    min_duration=1
-    max_duration=20
+    min_duration=0.7
+    max_duration=30
     out_prefix = os.path.splitext(os.path.basename(audio_path))[0]
     if os.path.exists(os.path.join(out_path, out_prefix)):
         return
@@ -25,5 +25,6 @@ def process_file_vad(paths):
         clip_path = os.path.join(out_path, out_prefix,str(i)+'.wav')
         if not os.path.exists(os.path.join(out_path, out_prefix)):
             os.makedirs(os.path.join(out_path, out_prefix),exist_ok=True)
+        segments[i] = segments[i].set_frame_rate(32000)
         segments[i].export(clip_path, format='wav')
     return 0
