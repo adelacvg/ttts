@@ -84,10 +84,7 @@ class TextEncoder2(nn.Module):
         self.encoder_text = attentions.Encoder(
             hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
         )
-        self.spec_pre = nn.Conv1d(spec_channels, hidden_channels, 1)
-        self.encoder_spec = attentions.Encoder(
-            hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
-        )
+        self.spec_proj = nn.Conv1d(spec_channels, hidden_channels, 1)
 
         self.mrte = MRTE()
 
@@ -112,6 +109,7 @@ class TextEncoder2(nn.Module):
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(self, y, y_lengths, text, text_lengths, ge, spec, spec_lengths):
+        spec = spec.transpose(1,2)
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
             y.dtype
         )
@@ -130,8 +128,7 @@ class TextEncoder2(nn.Module):
         text = self.encoder_text(text * text_mask, text_mask)
         y = self.mrte(y, y_mask, text, text_mask, ge)
         y = self.encoder2(y * y_mask, y_mask)
-        spec = self.spec_pre(spec*spec_mask)
-        spec = self.encoder_spec(spec*spec_mask, spec_mask)
+        spec = self.spec_proj(spec*spec_mask)*spec_mask
         y = self.timbre_mrte(y, y_mask, spec, spec_mask, ge)
         y = self.encoder3(y*y_mask, y_mask)
 
@@ -815,7 +812,7 @@ class SynthesizerTrn(nn.Module):
             inter_channels,
             hidden_channels,
             filter_channels,
-            spec_channels,
+            gin_channels,
             n_heads,
             n_layers,
             kernel_size,
@@ -866,7 +863,7 @@ class SynthesizerTrn(nn.Module):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
             y.dtype
         )
-        ge = self.ref_enc(y * y_mask, y_mask)
+        ge, timbre = self.ref_enc(y * y_mask, y_mask)
 
         ssl = self.ssl_proj(ssl)
         quantized, codes, commit_loss, quantized_list = self.quantizer(
@@ -879,7 +876,7 @@ class SynthesizerTrn(nn.Module):
             )
 
         x, m_p, logs_p, y_mask = self.enc_p(
-            quantized, y_lengths, text, text_lengths, ge, y, y_lengths
+            quantized, y_lengths, text, text_lengths, ge, timbre, y_lengths
         )
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=ge)
         z_p = self.flow(z, y_mask, g=ge)
@@ -902,7 +899,7 @@ class SynthesizerTrn(nn.Module):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
             y.dtype
         )
-        ge = self.ref_enc(y * y_mask, y_mask)
+        ge, timbre = self.ref_enc(y * y_mask, y_mask)
 
         ssl = self.ssl_proj(ssl)
         quantized, codes, commit_loss, _ = self.quantizer(ssl, layers=[0])
@@ -912,7 +909,7 @@ class SynthesizerTrn(nn.Module):
             )
 
         x, m_p, logs_p, y_mask = self.enc_p(
-            quantized, y_lengths, text, text_lengths, ge, y, y_lengths
+            quantized, y_lengths, text, text_lengths, ge, timbre, y_lengths
         )
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
@@ -924,12 +921,13 @@ class SynthesizerTrn(nn.Module):
     @torch.no_grad()
     def decode(self, codes, text, refer, noise_scale=0.5):
         ge = None
+        timbre = None
         if refer is not None:
             refer_lengths = torch.LongTensor([refer.size(2)]).to(refer.device)
             refer_mask = torch.unsqueeze(
                 commons.sequence_mask(refer_lengths, refer.size(2)), 1
             ).to(refer.dtype)
-            ge = self.ref_enc(refer * refer_mask, refer_mask)
+            ge, timbre = self.ref_enc(refer * refer_mask, refer_mask)
 
         y_lengths = torch.LongTensor([codes.size(2) * 2]).to(codes.device)
         text_lengths = torch.LongTensor([text.size(-1)]).to(text.device)
@@ -941,7 +939,7 @@ class SynthesizerTrn(nn.Module):
             )
 
         x, m_p, logs_p, y_mask = self.enc_p(
-            quantized, y_lengths, text, text_lengths, ge, refer, refer_lengths
+            quantized, y_lengths, text, text_lengths, ge, timbre, refer_lengths
         )
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 

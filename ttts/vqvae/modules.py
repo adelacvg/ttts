@@ -761,7 +761,7 @@ class MelStyleEncoder(nn.Module):
         # temoral average pooling
         w = self.temporal_avg_pool(x, mask=mask)
 
-        return w.unsqueeze(-1)
+        return w.unsqueeze(-1), x
 
 
 class MelStyleEncoderVAE(nn.Module):
