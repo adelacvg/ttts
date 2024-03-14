@@ -28,8 +28,11 @@ def get_grad_norm(model):
     total_norm = 0
     for name,p in model.named_parameters():
         try:
-            param_norm = p.grad.data.norm(2)
-            total_norm += param_norm.item() ** 2
+            if p.requires_grad:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+            else:
+                continue
         except:
             print(name)
     total_norm = total_norm ** (1. / 2) 
@@ -47,6 +50,7 @@ class Trainer(object):
         hps = HParams(**self.cfg)
         self.hps = hps
         dataset = VQGANDataset(hps)
+        eval_dataset = VQGANDataset(hps)
         train_sampler = BucketSampler(
             dataset, hps.train.batch_size,
             [32, 300, 400, 500, 600, 700, 800, 900, 1000,
@@ -176,7 +180,8 @@ class Trainer(object):
                     loss_fm = feature_loss(fmap_r, fmap_g)
                     loss_gen, losses_gen = generator_loss(y_d_hat_g)
                     loss_gen_all = loss_gen + loss_fm + loss_mel + kl_ssl + loss_kl
-                    
+                    model = self.accelerator.unwrap_model(self.G)
+
                     self.accelerator.backward(loss_gen_all)
                     G_grad_norm = get_grad_norm(self.G)
                     accelerator.clip_grad_norm_(self.G.parameters(), 1.0)

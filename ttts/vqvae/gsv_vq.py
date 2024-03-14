@@ -36,37 +36,108 @@ class MRTE(nn.Module):
 
         ssl_enc = self.c_pre(ssl_enc * ssl_mask)
         text_enc = self.text_pre(text * text_mask)
-        if test != None:
-            if test == 0:
-                x = (
-                    self.cross_attention(
-                        ssl_enc * ssl_mask, text_enc * text_mask, attn_mask
-                    )
-                    + ssl_enc
-                    + ge
-                )
-            elif test == 1:
-                x = ssl_enc + ge
-            elif test == 2:
-                x = (
-                    self.cross_attention(
-                        ssl_enc * 0 * ssl_mask, text_enc * text_mask, attn_mask
-                    )
-                    + ge
-                )
-            else:
-                raise ValueError("test should be 0,1,2")
-        else:
-            x = (
-                self.cross_attention(
-                    ssl_enc * ssl_mask, text_enc * text_mask, attn_mask
-                )
-                + ssl_enc
-                + ge
+        x = (
+            self.cross_attention(
+                ssl_enc * ssl_mask, text_enc * text_mask, attn_mask
             )
+            + ssl_enc
+            + ge
+        )
         x = self.c_post(x * ssl_mask)
         return x
 
+class TextEncoder2(nn.Module):
+    def __init__(
+        self,
+        out_channels,
+        hidden_channels,
+        filter_channels,
+        spec_channels,
+        n_heads,
+        n_layers,
+        kernel_size,
+        p_dropout,
+        latent_channels=192,
+    ):
+        super().__init__()
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
+        self.filter_channels = filter_channels
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+        self.latent_channels = latent_channels
+
+        self.ssl_proj = nn.Conv1d(768, hidden_channels, 1)
+
+        self.encoder_ssl = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers // 3,
+            kernel_size,
+            p_dropout,
+        )
+
+        self.text_embedding = nn.Embedding(256, hidden_channels)
+        self.encoder_text = attentions.Encoder(
+            hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
+        )
+        self.spec_pre = nn.Conv1d(spec_channels, hidden_channels, 1)
+        self.encoder_spec = attentions.Encoder(
+            hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
+        )
+
+        self.mrte = MRTE()
+
+        self.encoder2 = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers // 3,
+            kernel_size,
+            p_dropout,
+        )
+        self.timbre_mrte = MRTE()
+
+        self.encoder3 = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers // 3,
+            kernel_size,
+            p_dropout,
+        )
+        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+
+    def forward(self, y, y_lengths, text, text_lengths, ge, spec, spec_lengths):
+        y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
+            y.dtype
+        )
+        spec_mask = torch.unsqueeze(commons.sequence_mask(spec_lengths, spec.size(2)), 1).to(
+            spec.dtype
+        )
+
+        y = self.ssl_proj(y * y_mask) * y_mask
+     
+        y = self.encoder_ssl(y * y_mask, y_mask)
+
+        text_mask = torch.unsqueeze(
+            commons.sequence_mask(text_lengths, text.size(1)), 1
+        ).to(y.dtype)
+        text = self.text_embedding(text).transpose(1, 2)
+        text = self.encoder_text(text * text_mask, text_mask)
+        y = self.mrte(y, y_mask, text, text_mask, ge)
+        y = self.encoder2(y * y_mask, y_mask)
+        spec = self.spec_pre(spec*spec_mask)
+        spec = self.encoder_spec(spec*spec_mask, spec_mask)
+        y = self.timbre_mrte(y, y_mask, spec, spec_mask, ge)
+        y = self.encoder3(y*y_mask, y_mask)
+
+        stats = self.proj(y) * y_mask
+        m, logs = torch.split(stats, self.out_channels, dim=1)
+        return y, m, logs, y_mask
 class TextEncoder(nn.Module):
     def __init__(
         self,
@@ -103,7 +174,7 @@ class TextEncoder(nn.Module):
         self.encoder_text = attentions.Encoder(
             hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
         )
-        self.text_embedding = nn.Embedding(256, hidden_channels)
+        self.text_embedding = nn.Embedding(len(symbols), hidden_channels)
 
         self.mrte = MRTE()
 
@@ -160,6 +231,7 @@ class TextEncoder(nn.Module):
         stats = self.proj(y) * y_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
         return y, m, logs, y_mask, quantized
+
 
 
 class ResidualCouplingBlock(nn.Module):
@@ -739,10 +811,11 @@ class SynthesizerTrn(nn.Module):
         self.n_speakers = n_speakers
         self.gin_channels = gin_channels
 
-        self.enc_p = TextEncoder(
+        self.enc_p = TextEncoder2(
             inter_channels,
             hidden_channels,
             filter_channels,
+            spec_channels,
             n_heads,
             n_layers,
             kernel_size,
@@ -770,26 +843,24 @@ class SynthesizerTrn(nn.Module):
         self.flow = ResidualCouplingBlock(
             inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
         )
-
         self.ref_enc = modules.MelStyleEncoder(
             spec_channels, style_vector_dim=gin_channels
         )
-
         ssl_dim = 768
         assert semantic_frame_rate in ["25hz", "50hz"]
         self.semantic_frame_rate = semantic_frame_rate
         if semantic_frame_rate == "25hz":
-            self.ssl_proj = nn.Conv1d(ssl_dim, ssl_dim, 2, stride=2)
+            self.ssl_proj = nn.Conv1d(ssl_dim, ssl_dim, 3, stride=2, padding=1)
         else:
             self.ssl_proj = nn.Conv1d(ssl_dim, ssl_dim, 1, stride=1)
 
         self.quantizer = ResidualVectorQuantizer(dimension=ssl_dim, n_q=1, bins=1024)
-        # if freeze_quantizer:
-        #     self.ssl_proj.requires_grad_(False)
-        #     self.quantizer.requires_grad_(False)
-            # self.enc_p.text_embedding.requires_grad_(False)
-            # self.enc_p.encoder_text.requires_grad_(False)
-            # self.enc_p.mrte.requires_grad_(False)
+        if freeze_quantizer:
+            self.ssl_proj.requires_grad_(False)
+            self.quantizer.requires_grad_(False)
+        #     self.enc_p.text_embedding.requires_grad_(False)
+        #     self.enc_p.encoder_text.requires_grad_(False)
+        #     self.enc_p.mrte.requires_grad_(False)
 
     def forward(self, ssl, y, y_lengths, text, text_lengths):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
@@ -808,7 +879,7 @@ class SynthesizerTrn(nn.Module):
             )
 
         x, m_p, logs_p, y_mask = self.enc_p(
-            quantized, y_lengths, text, text_lengths, ge
+            quantized, y_lengths, text, text_lengths, ge, y, y_lengths
         )
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=ge)
         z_p = self.flow(z, y_mask, g=ge)
@@ -841,7 +912,7 @@ class SynthesizerTrn(nn.Module):
             )
 
         x, m_p, logs_p, y_mask = self.enc_p(
-            quantized, y_lengths, text, text_lengths, ge, test=test
+            quantized, y_lengths, text, text_lengths, ge, y, y_lengths
         )
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
@@ -870,7 +941,7 @@ class SynthesizerTrn(nn.Module):
             )
 
         x, m_p, logs_p, y_mask = self.enc_p(
-            quantized, y_lengths, text, text_lengths, ge
+            quantized, y_lengths, text, text_lengths, ge, refer, refer_lengths
         )
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 

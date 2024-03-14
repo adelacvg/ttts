@@ -7,7 +7,7 @@
     "lr":1e-4,
     "segment_size": 20480,
     "logs_folder":"ttts/vqvae/logs",
-    "batch_size" : 16
+    "batch_size" : 8
   },
   "dataset": {
     "pre":"~/tortoise_plus_zh",
