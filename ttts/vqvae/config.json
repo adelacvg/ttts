@@ -7,7 +7,19 @@
     "lr":1e-4,
     "segment_size": 20480,
     "logs_folder":"ttts/vqvae/logs",
-    "batch_size" : 8
+    "batch_size" : 8,
+
+    "num_code" : 32,
+    "formant_shift" : 1.4,
+    "pitch_shift" : 2.0,
+    "pitch_range" : 1.5,
+    "cutoff_lowpass" : 60,
+    "cutoff_highpass" : 10000,
+    "q_min" : 2,
+    "q_max" : 5,
+    "num_peak" : 8,
+    "g_min" : -12,
+    "g_max" : 12
   },
   "dataset": {
     "pre":"~/tortoise_plus_zh",
@@ -25,14 +37,13 @@
   "data": {
     "max_wav_value": 32768.0,
     "sampling_rate": 32000,
-    "filter_length": 2048,
-    "hop_length": 640,
-    "win_length": 2048,
-    "n_mel_channels": 128,
+    "filter_length": 4096,
+    "hop_length": 1280,
+    "win_length": 4096,
+    "n_mel_channels": 256,
     "mel_fmin": 0.0,
     "mel_fmax": null,
     "add_blank": true,
-    "n_speakers": 300,
     "cleaned_text": true
   },
   "vqvae": {
@@ -69,7 +80,7 @@
     "upsample_rates": [
       10,
       8,
-      2,
+      4,
       2,
       2
     ],
@@ -78,8 +89,8 @@
       16,
       16,
       8,
-      2,
-      2
+      4,
+      4
     ],
     "n_layers_q": 3,
     "use_spectral_norm": false,
