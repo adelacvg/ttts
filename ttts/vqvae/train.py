@@ -1,322 +1,542 @@
-import copy
-from datetime import datetime
-import json
-from pathlib import Path
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-from ttts.utils.utils import clean_checkpoints, plot_spectrogram_to_numpy, summarize
-from ttts.vqvae.dataset import VQGANDataset, VQVAECollater, BucketSampler
-from typing import List, Optional, Tuple, Union
-import torch
-import os
-from torch.utils.data import DataLoader
-from torch.profiler import profile, record_function, ProfilerActivity
-import torch.nn.functional as F
-from torch import nn
-from torch.optim import AdamW
-from accelerate import Accelerator
-from ttts.vqvae.rvq1 import RVQ1
-from ttts.vqvae.vq2 import SynthesizerTrn
+from ttts.utils import vc_utils as utils
+import os, json
 from ttts.utils.data_utils import spec_to_mel_torch, mel_spectrogram_torch, HParams, spectrogram_torch
-from ttts.utils import commons
-import torchaudio
-from ttts.vqvae.losses import generator_loss, discriminator_loss, feature_loss, kl_loss
-from ttts.vqvae.hifigan import MultiPeriodDiscriminator
+hps_path='ttts/vqvae/config.json'
+hps = HParams(**json.load(open(hps_path)))
+os.environ["CUDA_VISIBLE_DEVICES"] = hps.train.gpu_numbers
+import torch
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+import torch.multiprocessing as mp
+import torch.distributed as dist, traceback
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm
 from ttts.vqvae.augment import Augment
+import logging, traceback
 
-def set_requires_grad(model, val):
-    for p in model.parameters():
-        p.requires_grad = val
-def get_grad_norm(model):
-    total_norm = 0
-    for name,p in model.named_parameters():
-        try:
-            if p.requires_grad:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-            else:
-                continue
-        except:
-            print(name)
-    total_norm = total_norm ** (1. / 2) 
-    return total_norm
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-def cycle(dl):
-    while True:
-        for data in dl:
-            yield data
-def clip_grad_value_(parameters, clip_value, norm_type=2):
-    if isinstance(parameters, torch.Tensor):
-        parameters = [parameters]
-    parameters = list(filter(lambda p: p.grad is not None, parameters))
-    norm_type = float(norm_type)
-    if clip_value is not None:
-        clip_value = float(clip_value)
+logging.getLogger("matplotlib").setLevel(logging.INFO)
+logging.getLogger("h5py").setLevel(logging.INFO)
+logging.getLogger("numba").setLevel(logging.INFO)
+from random import randint
+from ttts.utils import commons
 
-    total_norm = 0
-    for p in parameters:
-        param_norm = p.grad.data.norm(norm_type)
-        total_norm += param_norm.item() ** norm_type
-        if clip_value is not None:
-            p.grad.data.clamp_(min=-clip_value, max=clip_value)
-    total_norm = total_norm ** (1.0 / norm_type)
-    return total_norm
-class Trainer(object):
-    def __init__(self, cfg_path='ttts/vqvae/config.json'):
-        self.accelerator = Accelerator()
-        self.cfg = json.load(open(cfg_path))
-        hps = HParams(**self.cfg)
-        self.hps = hps
-        self.config = hps
-        dataset = VQGANDataset(hps)
-        eval_dataset = VQGANDataset(hps)
-        train_sampler = BucketSampler(
-            dataset, hps.train.batch_size,
-            [32, 300, 400, 500, 600, 700, 800, 900, 1000,
-                1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900,],
-            shuffle=True,)
-        collate_fn=VQVAECollater()
-        self.dataloader = DataLoader(
-            dataset,
-            num_workers=8,
-            shuffle=False,
-            pin_memory=True,
-            collate_fn=collate_fn,
-            batch_sampler=train_sampler,
-            persistent_workers=True,
-            prefetch_factor=16,)
-        self.train_steps = self.cfg['train']['train_steps']
-        self.val_freq = self.cfg['train']['val_freq']
-        if self.accelerator.is_main_process:
-            now = datetime.now()
-            self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
-            self.logs_folder.mkdir(exist_ok = True, parents=True)
-        self.G = SynthesizerTrn(hps.data.filter_length // 2 + 1,hps.train.segment_size // hps.data.hop_length, **hps.vqvae)
-        self.D = MultiPeriodDiscriminator()
-        print("G params:", count_parameters(self.G))
-        print("D params:", count_parameters(self.D))
-        self.G_optimizer = AdamW(self.G.parameters(),lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
-        self.D_optimizer = AdamW(self.D.parameters(),lr=3e-4, betas=(0.9, 0.9999), weight_decay=0.01)
-        self.G, self.G_optimizer, self.D, self.D_optimizer, self.dataloader = self.accelerator.prepare(
-            self.G, self.G_optimizer, self.D, self.D_optimizer, self.dataloader)
-        self.step=0
-        self.epoch=-1
-        self.gradient_accumulate_every=1
-        self.aug = Augment(hps)
-    def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
-        """Sample augmentation parameters.
-        Args:
-            signal: [torch.float32; [B, T]], speech signal.
-        Returns:
-            augmentation parameters.
-        """
-        # [B]
-        bsize, _ = signal.shape
-        def sampler(ratio):
-            shifts = torch.rand(bsize, device=signal.device) * (ratio - 1.) + 1.
-            # flip
-            flip = torch.rand(bsize) < 0.5
-            shifts[flip] = shifts[flip] ** -1
-            return shifts
-        # sample shifts
-        fs = sampler(self.config.train.formant_shift)
-        ps = sampler(self.config.train.pitch_shift)
-        pr = sampler(self.config.train.pitch_range)
-        # parametric equalizer
-        peaks = self.config.train.num_peak
-        # quality factor
-        power = torch.rand(bsize, peaks + 2, device=signal.device)
-        # gains
-        g_min, g_max = self.config.train.g_min, self.config.train.g_max
-        gain = torch.rand(bsize, peaks + 2, device=signal.device) * (g_max - g_min) + g_min
-        return fs, ps, pr, power, gain
+from ttts.vqvae.dataset import VQGANDataset, VQVAECollater, DistributedBucketSampler
+from ttts.vqvae.vq2 import SynthesizerTrn, MultiPeriodDiscriminator
+from ttts.vqvae.losses import generator_loss, discriminator_loss, feature_loss, kl_loss
+from ttts.vqvae.process_ckpt import savee
 
-    def augment(self, signal: torch.Tensor, ps: bool = True) -> torch.Tensor:
-        """Augment the speech.
-        Args:
-            signal: [torch.float32; [B, T]], segmented speech.
-            ps: whether use pitch shift.
-        Returns:
-            [torch.float32; [B, T]], speech signal.
-        """
-        # B
-        bsize, _ = signal.shape
-        saves = None
-        while saves is None or len(saves) < bsize:
-            # [B] x 4
-            fshift, pshift, prange, power, gain = self.sample_like(signal)
-            if not ps:
-                pshift = None
-            # [B, T]
-            out = self.aug.forward(signal, pshift, prange, fshift, power, gain)
-            # for covering unexpected NaN
-            nan = out.isnan().any(dim=-1)
-            if not nan.all():
-                # save the outputs for not-nan inputs
-                if saves is None:
-                    saves = out[~nan]
-                else:
-                    saves = torch.cat([saves, out[~nan]], dim=0)
-        # [B, T]
-        return saves[:bsize]
-    def _get_target_encoder(self, model):
-        target_encoder = copy.deepcopy(model)
-        set_requires_grad(target_encoder, False)
-        for p in target_encoder.parameters():
-            p.DO_NOT_TRAIN = True
-        return target_encoder
-    def save(self, milestone):
-        if not self.accelerator.is_local_main_process:
-            return
-        data = {
-            'step': self.step,
-            'epoch': self.epoch,
-            'G': self.accelerator.get_state_dict(self.G),
-            'D': self.accelerator.get_state_dict(self.D),
-        }
-        torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
-    def load(self, model_path):
-        accelerator = self.accelerator
-        device = accelerator.device
-        data = torch.load(model_path, map_location=device)
-        G_state_dict = data['G']
-        D_state_dict = data['D']
-        self.step = data['step']
-        self.epoch = data['epoch']
-        G = accelerator.unwrap_model(self.G)
-        G.load_state_dict(G_state_dict)
-        D = accelerator.unwrap_model(self.D)
-        D.load_state_dict(D_state_dict)
-    def train(self):
-        accelerator = self.accelerator
-        device = accelerator.device
-        self.aug = self.aug.to(device)
-        hps = self.hps
-        if accelerator.is_main_process:
-            writer = SummaryWriter(log_dir=self.logs_folder)
-        epoch=self.epoch
-        with tqdm(initial = self.step, total = self.train_steps, disable = not accelerator.is_main_process) as pbar:
-            while self.step < self.train_steps:
-                self.dataloader.batch_sampler.epoch=epoch
-                epoch = epoch + 1
-                for data in self.dataloader:
-                    # with torch.autograd.detect_anomaly():
-                    wav = data['wav'].to(device)
-                    wav_length = data['wav_lengths'].to(device)
-                    text = data['text'].to(device)
-                    text_length = data['text_lengths'].to(device)
-                    spec = spectrogram_torch(wav, self.hps.data.filter_length,
-                        self.hps.data.hop_length, self.hps.data.win_length, center=False).squeeze(0)
-                    spec_length = torch.LongTensor([
-                        x//self.hps.data.hop_length for x in wav_length]).to(device)
-                    wav_aug = self.augment(wav)
-                    spec_aug = spectrogram_torch(wav_aug, self.hps.data.filter_length, self.hps.data.hop_length,
-                                self.hps.data.win_length, center=False).squeeze(0)
-                    with self.accelerator.autocast():
-                        (y_hat, kl_ssl, ids_slice, z_mask,
-                            (z, z_p, m_p, logs_p, m_q, logs_q),
-                            stats_ssl,) = self.G(wav, wav_aug, wav_length, spec, spec_aug, spec_length, text, text_length)
-                        #  ssl, y, y_lengths, text, text_length
-                        mel = spec_to_mel_torch(
-                            spec,
-                            hps.data.filter_length,
-                            hps.data.n_mel_channels,
-                            hps.data.sampling_rate,
-                            hps.data.mel_fmin,
-                            hps.data.mel_fmax,
-                        )
-                        y_mel = commons.slice_segments(
-                            mel, ids_slice, hps.train.segment_size // hps.data.hop_length
-                        )
-                        y_hat_mel = mel_spectrogram_torch(
-                            y_hat.squeeze(1),
-                            hps.data.filter_length,
-                            hps.data.n_mel_channels,
-                            hps.data.sampling_rate,
-                            hps.data.hop_length,
-                            hps.data.win_length,
-                            hps.data.mel_fmin,
-                            hps.data.mel_fmax,
-                        )
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = False
 
-                        y = commons.slice_segments(
-                            wav.unsqueeze(1), ids_slice * hps.data.hop_length, hps.train.segment_size
-                        )  # slice
-                        # Discriminator
-                        y_d_hat_r, y_d_hat_g, _, _ = self.D(y, y_hat.detach())
-                    loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
-                        y_d_hat_r, y_d_hat_g
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("medium") 
+global_step = 0
+
+device = "cpu"
+
+
+def main():
+
+    if torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+    else:
+        n_gpus = 1
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(randint(20000, 55555))
+
+    mp.spawn(
+        run,
+        nprocs=n_gpus,
+        args=(
+            n_gpus,
+            hps,
+        ),
+    )
+
+
+def run(rank, n_gpus, hps):
+    global global_step
+    if rank == 0:
+        logger = utils.get_logger(hps.train.exp_dir)
+        logger.info(hps)
+        writer = SummaryWriter(log_dir=hps.train.ckpt_dir)
+        writer_eval = SummaryWriter(log_dir=os.path.join(hps.train.ckpt_dir, "eval"))
+
+    dist.init_process_group(
+        backend = "gloo" if os.name == "nt" or not torch.cuda.is_available() else "nccl",
+        init_method="env://",
+        world_size=n_gpus,
+        rank=rank,
+    )
+    torch.manual_seed(hps.train.seed)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(rank)
+
+    train_dataset = VQGANDataset(hps)
+    train_sampler = DistributedBucketSampler(
+        train_dataset,
+        hps.train.batch_size,
+        [
+            32,
+            300,
+            400,
+            500,
+            600,
+            700,
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+        ],
+        num_replicas=n_gpus,
+        rank=rank,
+        shuffle=True,
+    )
+    collate_fn = VQVAECollater()
+    train_loader = DataLoader(
+        train_dataset,
+        num_workers=1,
+        shuffle=False,
+        pin_memory=True,
+        collate_fn=collate_fn,
+        batch_sampler=train_sampler,
+        persistent_workers=True,
+        prefetch_factor=16,
+    )
+    net_g = SynthesizerTrn(
+        hps.data.filter_length // 2 + 1,
+        hps.train.segment_size // hps.data.hop_length,
+        **hps.vqvae,
+    ).cuda(rank) if torch.cuda.is_available() else SynthesizerTrn(
+        hps.data.filter_length // 2 + 1,
+        hps.train.segment_size // hps.data.hop_length,
+        **hps.model,
+    ).to(device)
+
+    augment = Augment(hps).cuda(rank)
+    net_d = MultiPeriodDiscriminator().cuda(rank) if torch.cuda.is_available() else MultiPeriodDiscriminator().to(device)
+    for name, param in net_g.named_parameters():
+        if not param.requires_grad:
+            print(name, "not requires_grad")
+
+    optim_g = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, net_g.parameters()),
+        hps.train.learning_rate,
+        betas=hps.train.betas,
+        eps=hps.train.eps,
+    )
+    optim_d = torch.optim.AdamW(
+        net_d.parameters(),
+        hps.train.learning_rate,
+        betas=hps.train.betas,
+        eps=hps.train.eps,
+    )
+    if torch.cuda.is_available():
+        net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
+        net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
+    else:
+        net_g = net_g.to(device)
+        net_d = net_d.to(device)
+    try: 
+        _, _, _, epoch_str = utils.load_checkpoint(
+            utils.latest_checkpoint_path("%s/logs_s2" % hps.train.exp_dir, "D_*.pth"),
+            net_d,
+            optim_d,
+        )
+        if rank == 0:
+            logger.info("loaded D")
+        _, _, _, epoch_str = utils.load_checkpoint(
+            utils.latest_checkpoint_path("%s/logs_s2" % hps.train.exp_dir, "G_*.pth"),
+            net_g,
+            optim_g,
+        )
+        global_step = (epoch_str - 1) * len(train_loader)
+    except: 
+        epoch_str = 1
+        global_step = 0
+        if hps.train.pretrained_s2G != "":
+            if rank == 0:
+                logger.info("loaded pretrained %s" % hps.train.pretrained_s2G)
+            print(
+                net_g.module.load_state_dict(
+                    torch.load(hps.train.pretrained_s2G, map_location="cpu")["weight"],
+                    strict=False,
+                ) if torch.cuda.is_available() else net_g.load_state_dict(
+                    torch.load(hps.train.pretrained_s2G, map_location="cpu")["weight"],
+                    strict=False,
+                )
+            ) 
+        if hps.train.pretrained_s2D != "":
+            if rank == 0:
+                logger.info("loaded pretrained %s" % hps.train.pretrained_s2D)
+            print(
+                net_d.module.load_state_dict(
+                    torch.load(hps.train.pretrained_s2D, map_location="cpu")["weight"]
+                ) if torch.cuda.is_available() else net_d.load_state_dict(
+                    torch.load(hps.train.pretrained_s2D, map_location="cpu")["weight"]
+                )
+            )
+    scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
+        optim_g, gamma=hps.train.lr_decay, last_epoch=-1
+    )
+    scheduler_d = torch.optim.lr_scheduler.ExponentialLR(
+        optim_d, gamma=hps.train.lr_decay, last_epoch=-1
+    )
+    for _ in range(epoch_str):
+        scheduler_g.step()
+        scheduler_d.step()
+
+    scaler = GradScaler(enabled=hps.train.fp16_run)
+
+    for epoch in range(epoch_str, hps.train.epochs + 1):
+        if rank == 0:
+            train_and_evaluate(
+                rank,
+                epoch,
+                hps,
+                [net_g, net_d],
+                [optim_g, optim_d],
+                [scheduler_g, scheduler_d],
+                scaler,
+                # [train_loader, eval_loader], logger, [writer, writer_eval])
+                [train_loader, None],
+                logger,
+                [writer, writer_eval],
+                augment,
+            )
+        else:
+            train_and_evaluate(
+                rank,
+                epoch,
+                hps,
+                [net_g, net_d],
+                [optim_g, optim_d],
+                [scheduler_g, scheduler_d],
+                scaler,
+                [train_loader, None],
+                None,
+                None,
+                augment,
+            )
+        scheduler_g.step()
+        scheduler_d.step()
+
+
+def train_and_evaluate(
+    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, augment
+):
+    net_g, net_d = nets
+    optim_g, optim_d = optims
+    # scheduler_g, scheduler_d = schedulers
+    train_loader, eval_loader = loaders
+    if writers is not None:
+        writer, writer_eval = writers
+
+    train_loader.batch_sampler.set_epoch(epoch)
+    global global_step
+
+    net_g.train()
+    net_d.train()
+    for batch_idx, data in tqdm(enumerate(train_loader)):
+        wav = data['wav']
+        wav_lengths = data['wav_lengths']
+        text = data['text']
+        text_lengths = data['text_lengths']
+        if torch.cuda.is_available():
+            wav, wav_lengths = wav.cuda(rank, non_blocking=True), wav_lengths.cuda(
+                rank, non_blocking=True
+            )
+            y, y_lengths = wav, wav_lengths
+            text, text_lengths = text.cuda(rank, non_blocking=True), text_lengths.cuda(
+                rank, non_blocking=True
+            )
+        else:
+            wav, wav_lengths = wav.to(device), wav_lengths.to(device)
+            text, text_lengths = text.to(device), text_lengths.to(device)
+
+        with autocast(enabled=hps.train.fp16_run):
+            spec = spectrogram_torch(wav, hps.data.filter_length,
+                hps.data.hop_length, hps.data.win_length, center=False).squeeze(0)
+            spec_lengths = torch.LongTensor([
+                x//hps.data.hop_length for x in wav_lengths]).cuda(rank, non_blocking=True)
+            wav_aug = augment(wav)
+            spec_aug = spectrogram_torch(wav_aug, hps.data.filter_length,
+                hps.data.hop_length,
+                hps.data.win_length, center=False).squeeze(0)
+            (
+                y_hat,
+                kl_ssl,
+                ids_slice,
+                z_mask,
+                (z, z_p, m_p, logs_p, m_q, logs_q),
+                stats_ssl,
+            ) = net_g(wav, wav_aug, wav_lengths, spec, spec_aug, spec_lengths, text, text_lengths)
+
+            mel = spec_to_mel_torch(
+                spec,
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax,
+            )
+            y_mel = commons.slice_segments(
+                mel, ids_slice, hps.train.segment_size // hps.data.hop_length
+            )
+            y_hat_mel = mel_spectrogram_torch(
+                y_hat.squeeze(1),
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.hop_length,
+                hps.data.win_length,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax,
+            )
+
+            y = commons.slice_segments(
+                y.unsqueeze(1), ids_slice * hps.data.hop_length, hps.train.segment_size
+            )  # slice
+
+            # Discriminator
+            y_d_hat_r, y_d_hat_g, _, _ = net_d(y, y_hat.detach())
+            with autocast(enabled=False):
+                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
+                    y_d_hat_r, y_d_hat_g
+                )
+                loss_disc_all = loss_disc
+        optim_d.zero_grad()
+        scaler.scale(loss_disc_all).backward()
+        scaler.unscale_(optim_d)
+        grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
+        scaler.step(optim_d)
+
+        with autocast(enabled=hps.train.fp16_run):
+            # Generator
+            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
+            with autocast(enabled=False):
+                loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
+                loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
+
+                loss_fm = feature_loss(fmap_r, fmap_g)
+                loss_gen, losses_gen = generator_loss(y_d_hat_g)
+                loss_gen_all = loss_gen + loss_fm + loss_mel + kl_ssl * 1 + loss_kl
+
+        optim_g.zero_grad()
+        scaler.scale(loss_gen_all).backward()
+        scaler.unscale_(optim_g)
+        grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
+        scaler.step(optim_g)
+        scaler.update()
+
+        if rank == 0:
+            if global_step % hps.train.log_interval == 0:
+                lr = optim_g.param_groups[0]["lr"]
+                losses = [loss_disc, loss_gen, loss_fm, loss_mel, kl_ssl, loss_kl]
+                logger.info(
+                    "Train Epoch: {} [{:.0f}%]".format(
+                        epoch, 100.0 * batch_idx / len(train_loader)
                     )
-                    loss_disc_all = loss_disc
-                    self.accelerator.backward(loss_disc_all)
-                    D_grad_norm = get_grad_norm(self.D)
-                    # clip_grad_value_(self.D.parameters(), None)
-                    accelerator.clip_grad_norm_(self.D.parameters(), 1.0)
-                    accelerator.wait_for_everyone()
-                    self.D_optimizer.step()
-                    self.D_optimizer.zero_grad()
-                    accelerator.wait_for_everyone()
-                    
-                    # Generator
-                    with self.accelerator.autocast():
-                        y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.D(y, y_hat)
-                    loss_mel = F.l1_loss(y_mel, y_hat_mel) * 45
-                    loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * 0.1
-                    loss_fm = feature_loss(fmap_r, fmap_g)
-                    loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                    loss_gen_all = loss_gen + loss_fm + loss_mel + kl_ssl + loss_kl
-                    model = self.accelerator.unwrap_model(self.G)
+                )
+                logger.info([x.item() for x in losses] + [global_step, lr])
 
-                    self.accelerator.backward(loss_gen_all)
-                    G_grad_norm = get_grad_norm(self.G)
-                    accelerator.clip_grad_norm_(self.G.parameters(), 1.0)
-                    # clip_grad_value_(self.G.parameters(), None)
-                    pbar.set_description(f'G_loss:{loss_gen_all:.4f} D_loss:{loss_disc_all:.4f}')
-                    accelerator.wait_for_everyone()
-                    self.G_optimizer.step()
-                    self.G_optimizer.zero_grad()
-                    accelerator.wait_for_everyone()
-                    if accelerator.is_main_process and self.step % self.val_freq == 0:
-                        with torch.no_grad():
-                            eval_model = self.accelerator.unwrap_model(self.G)
-                            eval_model.eval()
-                            wav_eval, _, _ = eval_model.infer(wav, wav_length, spec, spec_length, text, text_length)
-                            eval_model.train()
-                        scalar_dict = {"gen/loss_gen_all": loss_gen_all, "gen/loss_gen":loss_gen,
-                            'gen/loss_fm':loss_fm,'gen/loss_mel':loss_mel,'gen/kl_ssl':kl_ssl,
-                            'gen/loss_kl':loss_kl, "norm/G_grad": G_grad_norm, "norm/D_grad": D_grad_norm,
-                            'disc/loss_disc_all':loss_disc_all}
-                        image_dict = {
-                            "mel": plot_spectrogram_to_numpy(y_mel[0, :, :].detach().unsqueeze(-1).cpu()),
-                            "mel_pred": plot_spectrogram_to_numpy(y_hat_mel[0, :, :].detach().unsqueeze(-1).cpu()),
-                        }
-                        audios_dict = {
-                            'gt':wav[0].detach().cpu(),
-                            'pert':wav_aug[0].detach().cpu(),
-                            'pred':wav_eval[0].detach().cpu()
-                        }
-                        milestone = self.step // self.cfg['train']['save_freq'] 
-                        torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), wav_eval[0].detach().cpu(), 32000)
-                        summarize(
-                            writer=writer,
-                            global_step=self.step,
-                            images=image_dict,
-                            audios=audios_dict,
-                            scalars=scalar_dict,
-                            audio_sampling_rate=32000
+                scalar_dict = {
+                    "loss/g/total": loss_gen_all,
+                    "loss/d/total": loss_disc_all,
+                    "learning_rate": lr,
+                    "grad_norm_d": grad_norm_d,
+                    "grad_norm_g": grad_norm_g,
+                }
+                scalar_dict.update(
+                    {
+                        "loss/g/fm": loss_fm,
+                        "loss/g/mel": loss_mel,
+                        "loss/g/kl_ssl": kl_ssl,
+                        "loss/g/kl": loss_kl,
+                    }
+                )
+
+                image_dict = {
+                    "slice/mel_org": utils.plot_spectrogram_to_numpy(
+                        y_mel[0].data.cpu().numpy()
+                    ),
+                    "slice/mel_gen": utils.plot_spectrogram_to_numpy(
+                        y_hat_mel[0].data.cpu().numpy()
+                    ),
+                    "all/mel": utils.plot_spectrogram_to_numpy(
+                        mel[0].data.cpu().numpy()
+                    ),
+                    "all/stats_ssl": utils.plot_spectrogram_to_numpy(
+                        stats_ssl[0].data.cpu().numpy()
+                    ),
+                }
+                utils.summarize(
+                    writer=writer,
+                    global_step=global_step,
+                    images=image_dict,
+                    scalars=scalar_dict,
+                )
+        global_step += 1
+    if epoch % hps.train.save_every_epoch == 0 and rank == 0:
+        if hps.train.if_save_latest == 0:
+            utils.save_checkpoint(
+                net_g,
+                optim_g,
+                hps.train.learning_rate,
+                epoch,
+                os.path.join(
+                    "%s" % hps.train.exp_dir, "G_{}.pth".format(global_step)
+                ),
+            )
+            utils.save_checkpoint(
+                net_d,
+                optim_d,
+                hps.train.learning_rate,
+                epoch,
+                os.path.join(
+                    "%s" % hps.train.exp_dir, "D_{}.pth".format(global_step)
+                ),
+            )
+        else:
+            utils.save_checkpoint(
+                net_g,
+                optim_g,
+                hps.train.learning_rate,
+                epoch,
+                os.path.join(
+                    "%s" % hps.data.exp_dir, "G_{}.pth".format(233333333333)
+                ),
+            )
+            utils.save_checkpoint(
+                net_d,
+                optim_d,
+                hps.train.learning_rate,
+                epoch,
+                os.path.join(
+                    "%s" % hps.data.exp_dir, "D_{}.pth".format(233333333333)
+                ),
+            )
+        if rank == 0 and hps.train.if_save_every_weights == True:
+            if hasattr(net_g, "module"):
+                ckpt = net_g.module.state_dict()
+            else:
+                ckpt = net_g.state_dict()
+            logger.info(
+                "saving ckpt %s_e%s:%s"
+                % (
+                    hps.name,
+                    epoch,
+                    savee(
+                        ckpt,
+                        hps.name + "_e%s_s%s" % (epoch, global_step),
+                        epoch,
+                        global_step,
+                        hps,
+                    ),
+                )
+            )
+
+    if rank == 0:
+        logger.info("====> Epoch: {}".format(epoch))
+
+
+def evaluate(hps, generator, eval_loader, writer_eval):
+    generator.eval()
+    image_dict = {}
+    audio_dict = {}
+    print("Evaluating ...")
+    with torch.no_grad():
+        for batch_idx, (
+            ssl,
+            ssl_lengths,
+            spec,
+            spec_lengths,
+            y,
+            y_lengths,
+            text,
+            text_lengths,
+        ) in enumerate(eval_loader):
+            print(111)
+            if torch.cuda.is_available():
+                spec, spec_lengths = spec.cuda(), spec_lengths.cuda()
+                y, y_lengths = y.cuda(), y_lengths.cuda()
+                ssl = ssl.cuda()
+                text, text_lengths = text.cuda(), text_lengths.cuda()
+            else:
+                spec, spec_lengths = spec.to(device), spec_lengths.to(device)
+                y, y_lengths = y.to(device), y_lengths.to(device)
+                ssl = ssl.to(device)
+                text, text_lengths = text.to(device), text_lengths.to(device)
+            for test in [0, 1]:
+                y_hat, mask, *_ = generator.module.infer(
+                    ssl, spec, spec_lengths, text, text_lengths, test=test
+                ) if torch.cuda.is_available() else generator.infer(
+                    ssl, spec, spec_lengths, text, text_lengths, test=test
+                )
+                y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
+
+                mel = spec_to_mel_torch(
+                    spec,
+                    hps.data.filter_length,
+                    hps.data.n_mel_channels,
+                    hps.data.sampling_rate,
+                    hps.data.mel_fmin,
+                    hps.data.mel_fmax,
+                )
+                y_hat_mel = mel_spectrogram_torch(
+                    y_hat.squeeze(1).float(),
+                    hps.data.filter_length,
+                    hps.data.n_mel_channels,
+                    hps.data.sampling_rate,
+                    hps.data.hop_length,
+                    hps.data.win_length,
+                    hps.data.mel_fmin,
+                    hps.data.mel_fmax,
+                )
+                image_dict.update(
+                    {
+                        f"gen/mel_{batch_idx}_{test}": utils.plot_spectrogram_to_numpy(
+                            y_hat_mel[0].cpu().numpy()
                         )
-                    if accelerator.is_main_process and self.step % self.cfg['train']['save_freq']==0:
-                        keep_ckpts = self.cfg['train']['keep_ckpts']
-                        if keep_ckpts > 0:
-                            clean_checkpoints(path_to_models=self.logs_folder, n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
-                        self.save(self.step//1000)
-                    self.step += 1
-                    pbar.update(1)
-        accelerator.print('training complete')
+                    }
+                )
+                audio_dict.update(
+                    {f"gen/audio_{batch_idx}_{test}": y_hat[0, :, : y_hat_lengths[0]]}
+                )
+                image_dict.update(
+                    {
+                        f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
+                            mel[0].cpu().numpy()
+                        )
+                    }
+                )
+                audio_dict.update({f"gt/audio_{batch_idx}": y[0, :, : y_lengths[0]]})
+
+        # y_hat, mask, *_ = generator.module.infer(ssl, spec_lengths, speakers, y=None)
+        # audio_dict.update({
+        #     f"gen/audio_{batch_idx}_style_pred": y_hat[0, :, :]
+        # })
+
+    utils.summarize(
+        writer=writer_eval,
+        global_step=global_step,
+        images=image_dict,
+        audios=audio_dict,
+        audio_sampling_rate=hps.data.sampling_rate,
+    )
+    generator.train()
 
 
-if __name__ == '__main__':
-    trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-17-15-24-41/model-5.pt')
-    trainer.train()
+if __name__ == "__main__":
+    main()
