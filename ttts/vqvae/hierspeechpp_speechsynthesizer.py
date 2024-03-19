@@ -1,22 +1,20 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-import modules
-import attentions
+from ttts.vqvae import modules, attentions
 
 from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
-from commons import init_weights, get_padding
+from ttts.utils.commons import init_weights, get_padding
 
 import torchaudio
 from einops import rearrange
 import transformers
 import math
-from styleencoder import StyleEncoder
-import commons
+from ttts.utils import commons
 
-from alias_free_torch import *
-import activations
+from ttts.vqvae.alias_free_torch import *
+from ttts.vqvae import activations
 
 class Wav2vec2(torch.nn.Module):
     def __init__(self, layer=7, w2v='mms'):

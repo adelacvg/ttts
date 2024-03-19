@@ -7,8 +7,7 @@ from ttts.utils import commons
 from ttts.vqvae import modules, attentions
 
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
-from torch.nn.utils.parametrizations import weight_norm
-from torch.nn.utils.parametrize import remove_parametrizations
+from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from ttts.utils.commons import init_weights, get_padding
 from ttts.vqvae.quantize import ResidualVectorQuantizer
 from ttts.utils.vc_utils import MultiHeadAttention
@@ -115,79 +114,27 @@ class TextEncoder(nn.Module):
         self.p_dropout = p_dropout
         self.latent_channels = latent_channels
 
-        self.ssl_proj = nn.Conv1d(768, hidden_channels, 1)
-
-        self.encoder_ssl = attentions.Encoder(
+        self.encoder = attentions.Encoder(
             hidden_channels,
             filter_channels,
             n_heads,
-            n_layers // 2,
-            kernel_size,
-            p_dropout,
-        )
-
-        # self.encoder_text = attentions.Encoder(
-        #     hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
-        # )
-        # self.text_embedding = nn.Embedding(256, hidden_channels)
-
-        # self.mrte = MRTE()
-
-        self.encoder2 = attentions.Encoder(
-            hidden_channels,
-            filter_channels,
-            n_heads,
-            n_layers // 2,
+            n_layers,
             kernel_size,
             p_dropout,
         )
 
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, y, y_lengths, text, text_lengths, ge, test=None):
+    def forward(self, y, y_lengths):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
             y.dtype
         )
 
-        y = self.ssl_proj(y * y_mask) * y_mask
-     
-        y = self.encoder_ssl(y * y_mask, y_mask)
-
-        # text_mask = torch.unsqueeze(
-        #     commons.sequence_mask(text_lengths, text.size(1)), 1
-        # ).to(y.dtype)
-        # if test == 1:
-        #     text[:, :] = 0
-        # text = self.text_embedding(text).transpose(1, 2)
-        # text = self.encoder_text(text * text_mask, text_mask)
-        # y = self.mrte(y, y_mask, text, text_mask, ge)
-
-        y = self.encoder2(y * y_mask, y_mask)
+        y = self.encoder(y * y_mask, y_mask)
 
         stats = self.proj(y) * y_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
-        return y, m, logs, y_mask
-
-    def extract_latent(self, x):
-        x = self.ssl_proj(x)
-        quantized, codes, commit_loss, quantized_list = self.quantizer(x)
-        return codes.transpose(0, 1)
-
-    def decode_latent(self, codes, y_mask, refer, refer_mask, ge):
-        quantized = self.quantizer.decode(codes)
-
-        y = self.vq_proj(quantized) * y_mask
-        y = self.encoder_ssl(y * y_mask, y_mask)
-
-        y = self.mrte(y, y_mask, refer, refer_mask, ge)
-
-        y = self.encoder2(y * y_mask, y_mask)
-
-        stats = self.proj(y) * y_mask
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        return y, m, logs, y_mask, quantized
-
-
+        return y, m, logs
 
 class ResidualCouplingBlock(nn.Module):
     def __init__(
@@ -392,7 +339,7 @@ class Generator(torch.nn.Module):
     def remove_weight_norm(self):
         print("Removing weight norm...")
         for l in self.ups:
-            remove_parametrizations(l)
+            l.remove_weight_norm()
         for l in self.resblocks:
             l.remove_weight_norm()
 
@@ -667,8 +614,8 @@ class PosteriorAudioEncoder(nn.Module):
     self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
     self.down_pre = nn.Conv1d(1, 16, 7, 1, padding=3)
     self.resblocks = nn.ModuleList()
-    downsample_rates = [10,8,4,2,2]
-    downsample_kernel_sizes = [16, 16, 8, 4, 4]
+    downsample_rates = [10,8,2,2,2]
+    downsample_kernel_sizes = [16, 16, 8, 2, 2]
     ch = [16, 32, 64, 96, 128, 192]
 
     resblock = modules.ResBlock1
@@ -787,7 +734,7 @@ class SynthesizerTrn(nn.Module):
             upsample_kernel_sizes,
             gin_channels=gin_channels,
         )
-        print("dec:", count_parameters(self.dec))
+        # print("dec:", count_parameters(self.dec)
         # self.mel_decoder = MelDecoder(
         #     inter_channels, filter_channels, n_heads=2,
         #     n_layers=2, kernel_size=5, p_dropout=0.1,
@@ -796,15 +743,18 @@ class SynthesizerTrn(nn.Module):
         self.enc_p = PosteriorAudioEncoder(
             spec_channels, inter_channels, hidden_channels,
             5, 1, 16, gin_channels=gin_channels)
-        # print("enc_p:", count_parameters(self.enc_p))
-        self.enc_p_2 = PosteriorEncoder(
-            inter_channels, inter_channels, hidden_channels,
-            5, 1, 16, gin_channels=gin_channels)
-        # print("enc_p_2:", count_parameters(self.enc_p_2))
+        self.enc_p_2 = TextEncoder(
+            inter_channels,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
+        )
         self.enc_q = PosteriorAudioEncoder(
             spec_channels, inter_channels, hidden_channels,
             5, 1, 16, gin_channels=gin_channels)
-        # print("enc_q:", count_parameters(self.enc_q))
         self.flow = ResidualCouplingBlock(
             inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
         )
@@ -812,6 +762,7 @@ class SynthesizerTrn(nn.Module):
             spec_channels, style_vector_dim=gin_channels
         )
         self.quantizer = ResidualVectorQuantizer(dimension=inter_channels, n_q=1, bins=1024)
+        self.proj = nn.Conv1d(inter_channels, inter_channels, 2, stride=2)
         # if freeze_quantizer:
         #     self.ssl_proj.requires_grad_(False)
         #     self.quantizer.requires_grad_(False)
@@ -822,10 +773,17 @@ class SynthesizerTrn(nn.Module):
         )
         ge = self.ref_enc(y * y_mask, y_mask)
 
+        assert not torch.any(torch.isnan(wav_aug))
         x, _, _ = self.enc_p(y_aug, wav_aug.unsqueeze(1), y_mask, g=ge)
+        assert not torch.any(torch.isnan(x))
+        
+        x = self.proj(x)
         quantized, codes,\
         commit_loss, quantized_list = self.quantizer(x, layers=[0])
-        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths, g=ge)
+        quantized = F.interpolate(
+            quantized, size=int(quantized.shape[-1] * 2), mode="nearest"
+        )
+        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths)
         z, m_q, logs_q = self.enc_q(y, wav.unsqueeze(1), y_mask, g=ge)
         z_p = self.flow(z, y_mask, g=ge)
 
@@ -851,7 +809,7 @@ class SynthesizerTrn(nn.Module):
         x, _, _ = self.enc_p(y, wav.unsqueeze(1), y_mask, g=ge)
         quantized, codes,\
         commit_loss, quantized_list = self.quantizer(x, layers=[0])
-        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths, g=ge)
+        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths)
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
@@ -870,7 +828,7 @@ class SynthesizerTrn(nn.Module):
         y_lengths = torch.LongTensor([codes.size(2)]).to(codes.device)
         quantized = self.quantizer.decode(codes)
         x, m_p, logs_p, y_mask = self.enc_p_2(
-            quantized, y_lengths, ge
+            quantized, y_lengths
         )
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 

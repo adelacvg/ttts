@@ -1,13 +1,29 @@
 {
   "train": {
     "train_steps":1000000,
-    "val_freq" : 100,
+    "log_interval" : 100,
     "save_freq" : 1000,
     "keep_ckpts" : 3,
-    "lr":1e-4,
+    "learning_rate":1e-4,
+    "betas": [ 0.8, 0.99 ],
+    "eps": 1e-09,
     "segment_size": 20480,
+    "exp_dir":"ttts/vqvae/logs",
+    "ckpt_dir":"ttts/vqvae/logs",
+    "seed": 1234,
     "logs_folder":"ttts/vqvae/logs",
+    "save_every_epoch":1,
+    "if_save_every_weights":false,
+    "if_save_latest":0,
+    "gpu_numbers":"5,7",
+    "lr_decay": 0.999875,
     "batch_size" : 8,
+    "fp16_run" : false,
+    "epochs" : 100,
+    "pretrained_s2G" : "",
+    "pretrained_s2D" : "",
+    "c_mel": 45,
+    "c_kl": 1.0,
 
     "num_code" : 32,
     "formant_shift" : 1.4,
@@ -30,17 +46,17 @@
   "dataloader":
   {
     "shuffle": true,
-    "num_workers" : 8,
+    "num_workers" : 32,
     "drop_last":true, 
     "pin_memory":true
   },
   "data": {
     "max_wav_value": 32768.0,
     "sampling_rate": 32000,
-    "filter_length": 4096,
-    "hop_length": 1280,
-    "win_length": 4096,
-    "n_mel_channels": 256,
+    "filter_length": 2048,
+    "hop_length": 640,
+    "win_length": 2048,
+    "n_mel_channels": 128,
     "mel_fmin": 0.0,
     "mel_fmax": null,
     "add_blank": true,
@@ -80,7 +96,7 @@
     "upsample_rates": [
       10,
       8,
-      4,
+      2,
       2,
       2
     ],
@@ -89,8 +105,8 @@
       16,
       16,
       8,
-      4,
-      4
+      2,
+      2
     ],
     "n_layers_q": 3,
     "use_spectral_norm": false,

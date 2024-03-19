@@ -16,7 +16,7 @@ from torch import nn
 from torch.optim import AdamW
 from accelerate import Accelerator
 from ttts.vqvae.rvq1 import RVQ1
-from ttts.vqvae.gsv_vq import SynthesizerTrn
+from ttts.vqvae.vq2 import SynthesizerTrn
 from ttts.utils.data_utils import spec_to_mel_torch, mel_spectrogram_torch, HParams, spectrogram_torch
 from ttts.utils import commons
 import torchaudio
@@ -101,23 +101,9 @@ class Trainer(object):
         self.G, self.G_optimizer, self.D, self.D_optimizer, self.dataloader = self.accelerator.prepare(
             self.G, self.G_optimizer, self.D, self.D_optimizer, self.dataloader)
         self.step=0
+        self.epoch=-1
         self.gradient_accumulate_every=1
         self.aug = Augment(hps)
-    def _get_target_encoder(self, model):
-        target_encoder = copy.deepcopy(model)
-        set_requires_grad(target_encoder, False)
-        for p in target_encoder.parameters():
-            p.DO_NOT_TRAIN = True
-        return target_encoder
-    def save(self, milestone):
-        if not self.accelerator.is_local_main_process:
-            return
-        data = {
-            'step': self.step,
-            'G': self.accelerator.get_state_dict(self.G),
-            'D': self.accelerator.get_state_dict(self.D),
-        }
-        torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
     def sample_like(self, signal: torch.Tensor) -> List[torch.Tensor]:
         """Sample augmentation parameters.
         Args:
@@ -174,7 +160,22 @@ class Trainer(object):
                     saves = torch.cat([saves, out[~nan]], dim=0)
         # [B, T]
         return saves[:bsize]
-
+    def _get_target_encoder(self, model):
+        target_encoder = copy.deepcopy(model)
+        set_requires_grad(target_encoder, False)
+        for p in target_encoder.parameters():
+            p.DO_NOT_TRAIN = True
+        return target_encoder
+    def save(self, milestone):
+        if not self.accelerator.is_local_main_process:
+            return
+        data = {
+            'step': self.step,
+            'epoch': self.epoch,
+            'G': self.accelerator.get_state_dict(self.G),
+            'D': self.accelerator.get_state_dict(self.D),
+        }
+        torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
     def load(self, model_path):
         accelerator = self.accelerator
         device = accelerator.device
@@ -182,6 +183,7 @@ class Trainer(object):
         G_state_dict = data['G']
         D_state_dict = data['D']
         self.step = data['step']
+        self.epoch = data['epoch']
         G = accelerator.unwrap_model(self.G)
         G.load_state_dict(G_state_dict)
         D = accelerator.unwrap_model(self.D)
@@ -193,13 +195,13 @@ class Trainer(object):
         hps = self.hps
         if accelerator.is_main_process:
             writer = SummaryWriter(log_dir=self.logs_folder)
-        epoch=-1
+        epoch=self.epoch
         with tqdm(initial = self.step, total = self.train_steps, disable = not accelerator.is_main_process) as pbar:
             while self.step < self.train_steps:
                 self.dataloader.batch_sampler.epoch=epoch
                 epoch = epoch + 1
                 for data in self.dataloader:
-                # with torch.autograd.detect_anomaly():
+                    # with torch.autograd.detect_anomaly():
                     wav = data['wav'].to(device)
                     wav_length = data['wav_lengths'].to(device)
                     text = data['text'].to(device)
@@ -207,19 +209,10 @@ class Trainer(object):
                     spec = spectrogram_torch(wav, self.hps.data.filter_length,
                         self.hps.data.hop_length, self.hps.data.win_length, center=False).squeeze(0)
                     spec_length = torch.LongTensor([
-                        (x.shape[-1]-1)//self.hps.data.hop_length + 1 for x in wav]).to(device)
+                        x//self.hps.data.hop_length for x in wav_length]).to(device)
                     wav_aug = self.augment(wav)
-                    spec_aug = spectrogram_torch(wav, self.hps.data.filter_length, self.hps.data.hop_length,
+                    spec_aug = spectrogram_torch(wav_aug, self.hps.data.filter_length, self.hps.data.hop_length,
                                 self.hps.data.win_length, center=False).squeeze(0)
-
-                    # with profile(activities=[
-                    #     ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-                    #     with record_function("model_inference"):
-                    #         (y_hat, kl_ssl, ids_slice, z_mask,
-                    #         (z, z_p, m_p, logs_p, m_q, logs_q),
-                    #         stats_ssl,) = self.G(wav, wav_aug, wav_length, spec, spec_aug, spec_length, text, text_length)
-                    # print(prof.key_averages().table(sort_by="cpu_time_total"))
-
                     with self.accelerator.autocast():
                         (y_hat, kl_ssl, ids_slice, z_mask,
                             (z, z_p, m_p, logs_p, m_q, logs_q),
@@ -258,8 +251,8 @@ class Trainer(object):
                     loss_disc_all = loss_disc
                     self.accelerator.backward(loss_disc_all)
                     D_grad_norm = get_grad_norm(self.D)
-                    clip_grad_value_(self.D.parameters(), None)
-                    # accelerator.clip_grad_norm_(self.D.parameters(), 1.0)
+                    # clip_grad_value_(self.D.parameters(), None)
+                    accelerator.clip_grad_norm_(self.D.parameters(), 1.0)
                     accelerator.wait_for_everyone()
                     self.D_optimizer.step()
                     self.D_optimizer.zero_grad()
@@ -277,7 +270,8 @@ class Trainer(object):
 
                     self.accelerator.backward(loss_gen_all)
                     G_grad_norm = get_grad_norm(self.G)
-                    clip_grad_value_(self.G.parameters(), None)
+                    accelerator.clip_grad_norm_(self.G.parameters(), 1.0)
+                    # clip_grad_value_(self.G.parameters(), None)
                     pbar.set_description(f'G_loss:{loss_gen_all:.4f} D_loss:{loss_disc_all:.4f}')
                     accelerator.wait_for_everyone()
                     self.G_optimizer.step()
@@ -324,5 +318,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-15-05-33-51/model-18.pt')
+    # trainer.load('/home/hyc/tortoise_plus_zh/ttts/vqvae/logs/2024-03-17-15-24-41/model-5.pt')
     trainer.train()
