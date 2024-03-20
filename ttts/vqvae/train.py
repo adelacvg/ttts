@@ -37,6 +37,8 @@ global_step = 0
 
 device = "cpu"
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def main():
 
@@ -129,7 +131,8 @@ def run(rank, n_gpus, hps):
     for name, param in net_g.named_parameters():
         if not param.requires_grad:
             print(name, "not requires_grad")
-
+    print("net_g:", count_parameters(net_g))
+    print("net_d:", count_parameters(net_d))
     optim_g = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, net_g.parameters()),
         hps.train.learning_rate,
@@ -150,14 +153,14 @@ def run(rank, n_gpus, hps):
         net_d = net_d.to(device)
     try: 
         _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path("%s/logs_s2" % hps.train.exp_dir, "D_*.pth"),
+            utils.latest_checkpoint_path("%s" % hps.train.exp_dir, "D_*.pth"),
             net_d,
             optim_d,
         )
         if rank == 0:
             logger.info("loaded D")
         _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path("%s/logs_s2" % hps.train.exp_dir, "G_*.pth"),
+            utils.latest_checkpoint_path("%s" % hps.train.exp_dir, "G_*.pth"),
             net_g,
             optim_g,
         )

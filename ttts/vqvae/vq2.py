@@ -114,6 +114,77 @@ class TextEncoder(nn.Module):
         self.p_dropout = p_dropout
         self.latent_channels = latent_channels
 
+        self.encoder_ssl = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers // 2,
+            kernel_size,
+            p_dropout,
+        )
+
+        self.encoder_text = attentions.Encoder(
+            hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout
+        )
+        self.text_embedding = nn.Embedding(256, hidden_channels)
+
+        self.mrte = MRTE()
+
+        self.encoder2 = attentions.Encoder(
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers // 2,
+            kernel_size,
+            p_dropout,
+        )
+
+        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+
+    def forward(self, y, y_lengths, text, text_lengths, ge, test=None):
+        y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(
+            y.dtype
+        )
+
+        y = self.encoder_ssl(y * y_mask, y_mask)
+
+        text_mask = torch.unsqueeze(
+            commons.sequence_mask(text_lengths, text.size(1)), 1
+        ).to(y.dtype)
+        if test == 1:
+            text[:, :] = 0
+        text = self.text_embedding(text).transpose(1, 2)
+        text = self.encoder_text(text * text_mask, text_mask)
+        y = self.mrte(y, y_mask, text, text_mask, ge)
+
+        y = self.encoder2(y * y_mask, y_mask)
+
+        stats = self.proj(y) * y_mask
+        m, logs = torch.split(stats, self.out_channels, dim=1)
+        return y, m, logs
+
+class TextEncoder_old(nn.Module):
+    def __init__(
+        self,
+        out_channels,
+        hidden_channels,
+        filter_channels,
+        n_heads,
+        n_layers,
+        kernel_size,
+        p_dropout,
+        latent_channels=192,
+    ):
+        super().__init__()
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
+        self.filter_channels = filter_channels
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.kernel_size = kernel_size
+        self.p_dropout = p_dropout
+        self.latent_channels = latent_channels
+
         self.encoder = attentions.Encoder(
             hidden_channels,
             filter_channels,
@@ -773,9 +844,7 @@ class SynthesizerTrn(nn.Module):
         )
         ge = self.ref_enc(y * y_mask, y_mask)
 
-        assert not torch.any(torch.isnan(wav_aug))
         x, _, _ = self.enc_p(y_aug, wav_aug.unsqueeze(1), y_mask, g=ge)
-        assert not torch.any(torch.isnan(x))
         
         x = self.proj(x)
         quantized, codes,\
@@ -783,7 +852,7 @@ class SynthesizerTrn(nn.Module):
         quantized = F.interpolate(
             quantized, size=int(quantized.shape[-1] * 2), mode="nearest"
         )
-        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths)
+        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths, text, text_lengths, ge)
         z, m_q, logs_q = self.enc_q(y, wav.unsqueeze(1), y_mask, g=ge)
         z_p = self.flow(z, y_mask, g=ge)
 
@@ -807,29 +876,31 @@ class SynthesizerTrn(nn.Module):
         ge = self.ref_enc(y * y_mask, y_mask)
 
         x, _, _ = self.enc_p(y, wav.unsqueeze(1), y_mask, g=ge)
+        x = self.proj(x)
         quantized, codes,\
         commit_loss, quantized_list = self.quantizer(x, layers=[0])
-        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths)
+        quantized = F.interpolate(
+            quantized, size=int(quantized.shape[-1] * 2), mode="nearest"
+        )
+        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths, text, text_lengths, ge)
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
-
-        o = self.dec((z * y_mask)[:, :, :], g=ge)
-        return o, y_mask, (z, z_p, m_p, logs_p)
+        o = self.dec(z, g=ge)
+        return  o
 
     @torch.no_grad()
     def decode(self, codes, text, refer, noise_scale=0.5):
         ge = None
         refer_lengths = torch.LongTensor([refer.size(2)]).to(refer.device)
+        text_lengths = torch.LongTensor([text.size(1)]).to(text.device)
         refer_mask = torch.unsqueeze(
             commons.sequence_mask(refer_lengths, refer.size(2)), 1
         ).to(refer.dtype)
         ge = self.ref_enc(refer * refer_mask, refer_mask)
         y_lengths = torch.LongTensor([codes.size(2)]).to(codes.device)
         quantized = self.quantizer.decode(codes)
-        x, m_p, logs_p, y_mask = self.enc_p_2(
-            quantized, y_lengths
-        )
+        quantized = F.interpolate(quantized, size=int(quantized.shape[-1] * 2), mode="nearest")
+        x, m_p, logs_p = self.enc_p_2(quantized, y_lengths, text, text_legnths, ge)
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=ge, reverse=True)
@@ -843,5 +914,6 @@ class SynthesizerTrn(nn.Module):
         )
         ge = self.ref_enc(y * y_mask, y_mask)
         x, _, _ = self.enc_p(y, wav.unsqueeze(1), y_mask, g=ge)
+        x = self.proj(x*y_mask)*y_mask
         quantized, codes, commit_loss, quantized_list = self.quantizer(x)
         return codes.transpose(0, 1)
