@@ -88,6 +88,6 @@
     "use_spectral_norm": false,
     "gin_channels": 512,
     "semantic_frame_rate": "25hz",
-    "freeze_quantizer": true
+    "freeze_quantizer": false
   }
 }

@@ -9,6 +9,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch.multiprocessing as mp
+from typing import List, Optional, Tuple, Union
 import torch.distributed as dist, traceback
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
@@ -57,6 +58,62 @@ def main():
             hps,
         ),
     )
+
+def sample_like(signal: torch.Tensor) -> List[torch.Tensor]:
+    """Sample augmentation parameters.
+    Args:
+        signal: [torch.float32; [B, T]], speech signal.
+    Returns:
+        augmentation parameters.
+    """
+    # [B]
+    bsize, _ = signal.shape
+    def sampler(ratio):
+        shifts = torch.rand(bsize, device=signal.device) * (ratio - 1.) + 1.
+        # flip
+        flip = torch.rand(bsize) < 0.5
+        shifts[flip] = shifts[flip] ** -1
+        return shifts
+    # sample shifts
+    fs = sampler(hps.train.formant_shift)
+    ps = sampler(hps.train.pitch_shift)
+    pr = sampler(hps.train.pitch_range)
+    # parametric equalizer
+    peaks = hps.train.num_peak
+    # quality factor
+    power = torch.rand(bsize, peaks + 2, device=signal.device)
+    # gains
+    g_min, g_max = hps.train.g_min, hps.train.g_max
+    gain = torch.rand(bsize, peaks + 2, device=signal.device) * (g_max - g_min) + g_min
+    return fs, ps, pr, power, gain
+def augment(signal, aug, ps: bool = False) -> torch.Tensor:
+        """Augment the speech.
+        Args:
+            signal: [torch.float32; [B, T]], segmented speech.
+            ps: whether use pitch shift.
+        Returns:
+            [torch.float32; [B, T]], speech signal.
+        """
+        # B
+        bsize, _ = signal.shape
+        saves = None
+        while saves is None or len(saves) < bsize:
+            # [B] x 4
+            fshift, pshift, prange, power, gain = sample_like(signal)
+            if not ps:
+                pshift = None
+            # [B, T]
+            out = aug.forward(signal, pshift, prange, fshift, power, gain)
+            # for covering unexpected NaN
+            nan = out.isnan().any(dim=-1)
+            if not nan.all():
+                # save the outputs for not-nan inputs
+                if saves is None:
+                    saves = out[~nan]
+                else:
+                    saves = torch.cat([saves, out[~nan]], dim=0)
+        # [B, T]
+        return saves[:bsize]
 
 
 def run(rank, n_gpus, hps):
@@ -125,8 +182,8 @@ def run(rank, n_gpus, hps):
         hps.train.segment_size // hps.data.hop_length,
         **hps.model,
     ).to(device)
+    aug = Augment(hps).cuda(rank)
 
-    augment = Augment(hps).cuda(rank)
     net_d = MultiPeriodDiscriminator().cuda(rank) if torch.cuda.is_available() else MultiPeriodDiscriminator().to(device)
     for name, param in net_g.named_parameters():
         if not param.requires_grad:
@@ -134,7 +191,8 @@ def run(rank, n_gpus, hps):
     print("net_g:", count_parameters(net_g))
     print("net_d:", count_parameters(net_d))
     optim_g = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, net_g.parameters()),
+        # filter(lambda p: p.requires_grad, net_g.parameters()),
+        net_g.parameters(),
         hps.train.learning_rate,
         betas=hps.train.betas,
         eps=hps.train.eps,
@@ -165,7 +223,8 @@ def run(rank, n_gpus, hps):
             optim_g,
         )
         global_step = (epoch_str - 1) * len(train_loader)
-    except: 
+    except Exception as e: 
+        print(e)
         epoch_str = 1
         global_step = 0
         if hps.train.pretrained_s2G != "":
@@ -216,7 +275,7 @@ def run(rank, n_gpus, hps):
                 [train_loader, None],
                 logger,
                 [writer, writer_eval],
-                augment,
+                aug,
             )
         else:
             train_and_evaluate(
@@ -230,14 +289,14 @@ def run(rank, n_gpus, hps):
                 [train_loader, None],
                 None,
                 None,
-                augment,
+                aug,
             )
         scheduler_g.step()
         scheduler_d.step()
 
 
 def train_and_evaluate(
-    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, augment
+    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, aug
 ):
     net_g, net_d = nets
     optim_g, optim_d = optims
@@ -273,7 +332,10 @@ def train_and_evaluate(
                 hps.data.hop_length, hps.data.win_length, center=False).squeeze(0)
             spec_lengths = torch.LongTensor([
                 x//hps.data.hop_length for x in wav_lengths]).cuda(rank, non_blocking=True)
-            wav_aug = augment(wav)
+            if hps.vqvae.freeze_quantizer == True:
+                wav_aug = wav
+            else:
+                wav_aug = augment(wav, aug)
             spec_aug = spectrogram_torch(wav_aug, hps.data.filter_length,
                 hps.data.hop_length,
                 hps.data.win_length, center=False).squeeze(0)
@@ -369,7 +431,11 @@ def train_and_evaluate(
                         "loss/g/kl": loss_kl,
                     }
                 )
-
+                
+                audios_dict = {
+                        'wav':wav[0].detach().cpu(),
+                        'aug':wav_aug[0].detach().cpu(),
+                    }
                 image_dict = {
                     "slice/mel_org": utils.plot_spectrogram_to_numpy(
                         y_mel[0].data.cpu().numpy()
@@ -388,6 +454,7 @@ def train_and_evaluate(
                     writer=writer,
                     global_step=global_step,
                     images=image_dict,
+                    audios=audios_dict,
                     scalars=scalar_dict,
                 )
         global_step += 1

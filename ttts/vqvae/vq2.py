@@ -834,9 +834,10 @@ class SynthesizerTrn(nn.Module):
         )
         self.quantizer = ResidualVectorQuantizer(dimension=inter_channels, n_q=1, bins=1024)
         self.proj = nn.Conv1d(inter_channels, inter_channels, 2, stride=2)
-        # if freeze_quantizer:
-        #     self.ssl_proj.requires_grad_(False)
-        #     self.quantizer.requires_grad_(False)
+        if freeze_quantizer:
+            # self.proj.requires_grad_(False)
+            # self.quantizer.requires_grad_(False)
+            self.enc_p.requires_grad_(False)
 
     def forward(self, wav, wav_aug, wav_lengths, y, y_aug, y_lengths, text, text_lengths):
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, y.size(2)), 1).to(

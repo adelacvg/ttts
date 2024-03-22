@@ -7,7 +7,7 @@ from ttts.utils.data_utils import spec_to_mel_torch, mel_spectrogram_torch, HPar
 from ttts.vqvae.vq2 import SynthesizerTrn
 from pypinyin import Style, lazy_pinyin
 import torch
-device = 'cuda:4'
+device = 'cuda:1'
 hps_path='ttts/vqvae/config.json'
 hps = HParams(**json.load(open(hps_path)))
 net_g = SynthesizerTrn(
@@ -22,6 +22,7 @@ model, _, _, _ = utils.load_checkpoint(
 wav,sr = torchaudio.load('ttts/6.wav')
 tok = VoiceBpeTokenizer('ttts/gpt/gpt_tts_tokenizer.json')
 text = '没什么，没什么。只是他平时总是站在这里，有点奇怪而已。'
+# text = '没错没错，就是这样。'
 text = ' '.join(lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True))
 text = tok.encode(text)
 text = torch.LongTensor(text).to(device).unsqueeze(0)
