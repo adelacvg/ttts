@@ -1,0 +1,103 @@
+{
+  "train": {
+    "gpu_numbers": "1,2",
+    "train_steps": 1000000,
+    "val_freq": 100,
+    "save_freq": 1000,
+    "keep_ckpts": 3,
+    "learning_rate": 1e-4,
+    "betas": [
+      0.8,
+      0.99
+    ],
+    "eps": 1e-09,
+    "segment_size": 20480,
+    "logs_folder": "ttts/vqvae/logs/v3",
+    "seed": 1234,
+    "save_every_epoch": 1,
+    "if_save_every_weights": false,
+    "if_save_latest": 0,
+    "lr_decay": 0.999875,
+    "batch_size": 16,
+    "fp16_run": false,
+    "epochs": 100,
+    "c_mel": 45,
+    "c_kl": 1.0
+  },
+  "dataset": {
+    "pre": "",
+    "path": "ttts/data/WenetSpeech4TTS_latin.jsonl",
+    "pad_to_samples": 200,
+    "should_squeeze": true,
+    "lang": "ZH"
+  },
+  "dataloader": {
+    "shuffle": true,
+    "num_workers": 6,
+    "drop_last": true,
+    "pin_memory": true
+  },
+  "data": {
+    "max_wav_value": 32768.0,
+    "sampling_rate": 32000,
+    "filter_length": 1024,
+    "hop_length": 320,
+    "win_length": 1024,
+    "n_mel_channels": 128,
+    "prosody_channels": 20,
+    "mel_fmin": 0.0,
+    "mel_fmax": null,
+    "add_blank": true,
+    "cleaned_text": true
+  },
+  "vqvae": {
+    "inter_channels": 128,
+    "hidden_channels": 128,
+    "filter_channels": 512,
+    "n_heads": 2,
+    "n_layers": 3,
+    "kernel_size": 3,
+    "p_dropout": 0.1,
+    "resblock": "1",
+    "resblock_kernel_sizes": [
+      3,
+      7,
+      11
+    ],
+    "resblock_dilation_sizes": [
+      [
+        1,
+        3,
+        5
+      ],
+      [
+        1,
+        3,
+        5
+      ],
+      [
+        1,
+        3,
+        5
+      ]
+    ],
+    "upsample_rates": [
+      10,
+      4,
+      2,
+      2,
+      2
+    ],
+    "upsample_initial_channel": 512,
+    "upsample_kernel_sizes": [
+      16,
+      8,
+      8,
+      2,
+      2
+    ],
+    "n_layers_q": 3,
+    "use_spectral_norm": false,
+    "gin_channels": 512
+  }
+}
